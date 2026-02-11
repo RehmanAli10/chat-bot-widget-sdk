@@ -1,276 +1,763 @@
 /**
- * AI Chatbot Widget SDK
- * Version: 1.2.0
- *
- * Converted from standalone widget to embeddable SDK.
- * Drop into any website with a single <script> tag.
- *
- * Usage:
- *   <script src="https://cdn.jsdelivr.net/gh/RehmanAli10/chat-bot-widget-sdk@main/chatbot-sdk.js"></script>
- *   <script>
- *     new ChatbotSDK({ apiUrl: "https://your-backend.vercel.app/api/chat" }).init();
- *   </script>
- *
- * Config options:
- *   apiUrl         {string}  REQUIRED — your backend /api/chat endpoint
- *   position       {string}  "bottom-right" | "bottom-left" | "top-right" | "top-left"  (default: "bottom-right")
- *   theme          {string}  "blue" | "green" | "purple" | "red" | "orange"             (default: "blue")
- *   autoOpen       {boolean} open the widget automatically on page load                 (default: false)
- *   welcomeMessage {string}  first bot message shown when widget opens
- *   headerTitle    {string}  widget header title                                        (default: "AI Assistant")
- *   headerSubtitle {string}  widget header subtitle                                     (default: "Online • Ready to chat")
- *   placeholder    {string}  input placeholder text                                     (default: "Type your message...")
+ * AI Chat Widget SDK
+ * Embeddable chat widget for WordPress and other websites
+ * Version: 1.0.0
  */
 
-(function (global) {
+(function (window) {
   "use strict";
 
-  // ─── Font Awesome (loaded once per page) ─────────────────────────────────
-  function _loadFontAwesome() {
-    if (document.getElementById("chatbot-sdk-fa")) return;
-    const link = document.createElement("link");
-    link.id = "chatbot-sdk-fa";
-    link.rel = "stylesheet";
-    link.href =
-      "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css";
-    document.head.appendChild(link);
+  // Prevent multiple initializations
+  if (window.AIChatWidget) {
+    console.warn("AI Chat Widget already initialized");
+    return;
   }
 
-  // ─── SDK Class ────────────────────────────────────────────────────────────
-  class ChatbotSDK {
+  class AIChatWidget {
     constructor(config = {}) {
-      if (!config.apiUrl) {
-        throw new Error(
-          "[ChatbotSDK] 'apiUrl' is required. " +
-            "e.g. new ChatbotSDK({ apiUrl: 'https://your-app.vercel.app/api/chat' })",
-        );
-      }
-
       this.config = {
-        apiUrl: config.apiUrl,
-        position: config.position || "bottom-right",
-        theme: config.theme || "blue",
-        autoOpen: config.autoOpen || false,
-        welcomeMessage:
-          config.welcomeMessage ||
+        apiUrl: config.apiUrl || "http://127.0.0.1:3000/api/chat",
+        position: config.position || "bottom-right", // bottom-right, bottom-left
+        primaryColor: config.primaryColor || "#007aff",
+        buttonSize: config.buttonSize || 64,
+        zIndex: config.zIndex || 1000,
+        greeting:
+          config.greeting ||
           "Hello! 👋 I can help you book an appointment.\n\nTo get started, please provide your email.",
         headerTitle: config.headerTitle || "AI Assistant",
         headerSubtitle: config.headerSubtitle || "Online • Ready to chat",
-        placeholder: config.placeholder || "Type your message...",
+        autoOpen: config.autoOpen || false,
+        ...config,
       };
 
-      // Unique per-instance prefix — prevents ID collisions when multiple widgets exist on a page
-      this.instanceId = "cs-" + this._generateUUID().slice(0, 8);
-      this.sessionId = this._generateUUID();
-      this.isOpen = false;
-      this.hasShownWelcome = false;
+      this.sessionId = this.generateUUID();
       this.isTyping = false;
-      this.waitingForResponse = false;
-      this.currentOptions = null;
-
+      this.isChatOpen = false;
+      this.hasShownWelcome = false;
       this.bookingState = {
         patientId: null,
         locationId: null,
         appointmentTypeId: null,
         selectedSlot: null,
       };
+      this.currentOptions = null;
+      this.waitingForResponse = false;
 
-      this.elements = {};
-      this.eventHandlers = {};
+      this.init();
     }
 
-    // ─── Public API ──────────────────────────────────────────────────────────
+    generateUUID() {
+      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+        /[xy]/g,
+        function (c) {
+          const r = (Math.random() * 16) | 0;
+          const v = c === "x" ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        },
+      );
+    }
 
-    /** Initialize and inject the widget into the page */
     init() {
-      _loadFontAwesome();
-      this._injectStyles();
-      this._injectHTML();
-      this._attachEventListeners();
-      if (this.config.autoOpen) setTimeout(() => this.open(), 500);
-      this._emit("ready");
-      return this;
+      this.injectStyles();
+      this.createWidget();
+      this.attachEventListeners();
+
+      if (this.config.autoOpen) {
+        setTimeout(() => this.openChat(), 500);
+      }
     }
 
-    /** Open the chat widget */
-    open() {
-      this.isOpen = true;
+    injectStyles() {
+      const styleId = "ai-chat-widget-styles";
+      if (document.getElementById(styleId)) return;
+
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent = `
+        .ai-chat-widget-container {
+          --ai-primary: ${this.config.primaryColor};
+          --ai-primary-dark: ${this.adjustColor(this.config.primaryColor, -20)};
+          --ai-bot-bg: #f2f2f7;
+          --ai-user-bg: ${this.config.primaryColor};
+          --ai-text-dark: #1d1d1f;
+          --ai-text-light: #86868b;
+          --ai-border: #e5e5ea;
+          --ai-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+          --ai-radius: 16px;
+          --ai-widget-size: ${this.config.buttonSize}px;
+          
+          position: fixed;
+          ${this.getPositionStyles()}
+          z-index: ${this.config.zIndex};
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        .ai-chat-widget-container * {
+          margin: 0;
+          padding: 0;
+          box-sizing: border-box;
+        }
+
+        .ai-chat-button {
+          width: var(--ai-widget-size);
+          height: var(--ai-widget-size);
+          border-radius: 50%;
+          background: var(--ai-primary);
+          color: white;
+          border: none;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 24px;
+          box-shadow: 0 6px 20px rgba(0, 122, 255, 0.3);
+          transition: all 0.3s ease;
+          position: relative;
+          z-index: ${this.config.zIndex + 1};
+        }
+
+        .ai-chat-button:hover {
+          background: var(--ai-primary-dark);
+          transform: scale(1.05);
+          box-shadow: 0 8px 25px rgba(0, 122, 255, 0.4);
+        }
+
+        .ai-chat-button.active {
+          transform: rotate(90deg);
+          background: #ff3b30;
+        }
+
+        .ai-chat-button.active:hover {
+          background: #d70015;
+        }
+
+        .ai-chat-widget {
+          max-width: 400px;
+          height: 600px;
+          background: white;
+          border-radius: var(--ai-radius);
+          box-shadow: var(--ai-shadow);
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+          position: absolute;
+          bottom: calc(var(--ai-widget-size) + 20px);
+          ${this.config.position.includes("right") ? "right: 0;" : "left: 0;"}
+          opacity: 0;
+          visibility: hidden;
+          transform: translateY(20px);
+          transition: all 0.3s ease;
+        }
+
+        .ai-chat-widget.active {
+          opacity: 1;
+          visibility: visible;
+          transform: translateY(0);
+        }
+
+        .ai-chat-header {
+          padding: 16px 20px;
+          background: white;
+          border-bottom: 1px solid var(--ai-border);
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .ai-header-icon {
+          width: 36px;
+          height: 36px;
+          background: var(--ai-primary);
+          border-radius: 10px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-size: 18px;
+        }
+
+        .ai-header-info h2 {
+          font-size: 17px;
+          font-weight: 600;
+          color: var(--ai-text-dark);
+        }
+
+        .ai-header-info p {
+          font-size: 13px;
+          color: var(--ai-text-light);
+          margin-top: 2px;
+        }
+
+        .ai-status-dot {
+          width: 8px;
+          height: 8px;
+          background: #30d158;
+          border-radius: 50%;
+          margin-right: 6px;
+          display: inline-block;
+          animation: ai-pulse 2s infinite;
+        }
+
+        @keyframes ai-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+
+        .ai-messages-container {
+          flex: 1;
+          overflow-y: auto;
+          padding: 20px;
+          background: #fafafa;
+        }
+
+        .ai-message {
+          display: flex;
+          gap: 8px;
+          margin-bottom: 16px;
+          animation: ai-fadeIn 0.3s ease;
+        }
+
+        @keyframes ai-fadeIn {
+          from {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        .ai-message.bot {
+          align-items: flex-start;
+        }
+
+        .ai-message.user {
+          align-items: flex-end;
+          flex-direction: row-reverse;
+        }
+
+        .ai-message-avatar {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          font-size: 14px;
+        }
+
+        .ai-message.bot .ai-message-avatar {
+          background: var(--ai-bot-bg);
+          color: var(--ai-primary);
+        }
+
+        .ai-message.user .ai-message-avatar {
+          background: var(--ai-user-bg);
+          color: white;
+        }
+
+        .ai-message-content {
+          max-width: 70%;
+        }
+
+        .ai-message-bubble {
+          padding: 12px 16px;
+          border-radius: 18px;
+          line-height: 1.4;
+          font-size: 15px;
+          word-wrap: break-word;
+        }
+
+        .ai-message.bot .ai-message-bubble {
+          background: white;
+          color: var(--ai-text-dark);
+          border: 1px solid var(--ai-border);
+          border-bottom-left-radius: 4px;
+        }
+
+        .ai-message.user .ai-message-bubble {
+          background: var(--ai-user-bg);
+          color: white;
+          border-bottom-right-radius: 4px;
+        }
+
+        .ai-message-time {
+          font-size: 11px;
+          color: var(--ai-text-light);
+          margin-top: 4px;
+          text-align: right;
+        }
+
+        .ai-message.user .ai-message-time {
+          color: rgba(255, 255, 255, 0.7);
+        }
+
+        .ai-typing-indicator {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 12px;
+        }
+
+        .ai-typing-dot {
+          width: 6px;
+          height: 6px;
+          background: var(--ai-text-light);
+          border-radius: 50%;
+          animation: ai-typing 1.4s infinite ease-in-out;
+        }
+
+        .ai-typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .ai-typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes ai-typing {
+          0%, 80%, 100% {
+            transform: scale(0.8);
+            opacity: 0.5;
+          }
+          40% {
+            transform: scale(1);
+            opacity: 1;
+          }
+        }
+
+        .ai-input-container {
+          padding: 16px 20px;
+          background: white;
+          border-top: 1px solid var(--ai-border);
+        }
+
+        .ai-input-wrapper {
+          display: flex;
+          gap: 12px;
+          align-items: center;
+        }
+
+        .ai-message-input {
+          flex: 1;
+          padding: 12px 16px;
+          border: 1px solid var(--ai-border);
+          border-radius: 20px;
+          font-size: 15px;
+          outline: none;
+          transition: all 0.2s;
+          background: #f2f2f7;
+          font-family: inherit;
+        }
+
+        .ai-message-input:focus {
+          background: white;
+          border-color: var(--ai-primary);
+        }
+
+        .ai-message-input:disabled {
+          background: #e5e5ea;
+          cursor: not-allowed;
+          opacity: 0.6;
+        }
+
+        .ai-send-button {
+          width: 44px;
+          height: 44px;
+          border-radius: 50%;
+          background: var(--ai-primary);
+          color: white;
+          border: none;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.2s;
+          flex-shrink: 0;
+        }
+
+        .ai-send-button:hover {
+          background: var(--ai-primary-dark);
+          transform: scale(1.05);
+        }
+
+        .ai-send-button:disabled {
+          background: var(--ai-text-light);
+          cursor: not-allowed;
+          transform: none;
+        }
+
+        .ai-welcome-message {
+          text-align: center;
+          padding: 40px 20px;
+          color: var(--ai-text-light);
+        }
+
+        .ai-welcome-icon {
+          font-size: 48px;
+          color: var(--ai-primary);
+          margin-bottom: 16px;
+          opacity: 0.5;
+        }
+
+        .ai-messages-container::-webkit-scrollbar {
+          width: 6px;
+        }
+
+        .ai-messages-container::-webkit-scrollbar-track {
+          background: transparent;
+        }
+
+        .ai-messages-container::-webkit-scrollbar-thumb {
+          background: #c7c7cc;
+          border-radius: 3px;
+        }
+
+        .ai-options-container {
+          margin: 12px 0;
+          padding: 0 8px;
+        }
+
+        .ai-option-button {
+          display: block;
+          width: 100%;
+          padding: 12px 16px;
+          margin: 8px 0;
+          background: #f2f2f7;
+          border: 1px solid #e5e5ea;
+          border-radius: 10px;
+          text-align: left;
+          font-size: 15px;
+          cursor: pointer;
+          transition: all 0.2s;
+          font-family: inherit;
+        }
+
+        .ai-option-button:hover {
+          background: #e5e5ea;
+          border-color: var(--ai-primary);
+        }
+
+        .ai-option-button:active {
+          background: #d0d0d7;
+          transform: scale(0.98);
+        }
+
+        .ai-option-button:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .ai-info-message {
+          background: #fff3cd;
+          border: 1px solid #ffc107;
+          border-radius: 10px;
+          padding: 12px 16px;
+          margin: 12px 0;
+          font-size: 14px;
+          color: #856404;
+        }
+
+        .ai-chat-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: transparent;
+          z-index: ${this.config.zIndex - 1};
+          display: none;
+        }
+
+        .ai-chat-overlay.active {
+          display: block;
+        }
+
+        @media (max-width: 480px) {
+          .ai-chat-widget {
+            width: calc(100vw - 40px);
+            height: 70vh;
+            max-width: 100%;
+            border-radius: var(--ai-radius);
+            bottom: calc(var(--ai-widget-size) + 20px);
+            ${this.config.position.includes("right") ? "right: 20px;" : "left: 20px;"}
+          }
+
+          .ai-chat-widget-container {
+            ${this.config.position.includes("bottom") ? "bottom: 20px;" : "top: 20px;"}
+            ${this.config.position.includes("right") ? "right: 20px;" : "left: 20px;"}
+          }
+
+          .ai-message-content {
+            max-width: 80%;
+          }
+        }
+
+        /* Font Awesome Icons (minimal SVG icons) */
+        .ai-icon {
+          display: inline-block;
+          width: 1em;
+          height: 1em;
+          vertical-align: -0.125em;
+        }
+      `;
+
+      document.head.appendChild(style);
+    }
+
+    getPositionStyles() {
+      const positions = {
+        "bottom-right": "bottom: 30px; right: 30px;",
+        "bottom-left": "bottom: 30px; left: 30px;",
+        "top-right": "top: 30px; right: 30px;",
+        "top-left": "top: 30px; left: 30px;",
+      };
+      return positions[this.config.position] || positions["bottom-right"];
+    }
+
+    adjustColor(color, percent) {
+      const num = parseInt(color.replace("#", ""), 16);
+      const amt = Math.round(2.55 * percent);
+      const R = (num >> 16) + amt;
+      const G = ((num >> 8) & 0x00ff) + amt;
+      const B = (num & 0x0000ff) + amt;
+      return (
+        "#" +
+        (
+          0x1000000 +
+          (R < 255 ? (R < 1 ? 0 : R) : 255) * 0x10000 +
+          (G < 255 ? (G < 1 ? 0 : G) : 255) * 0x100 +
+          (B < 255 ? (B < 1 ? 0 : B) : 255)
+        )
+          .toString(16)
+          .slice(1)
+      );
+    }
+
+    createWidget() {
+      // Create container
+      this.container = document.createElement("div");
+      this.container.className = "ai-chat-widget-container";
+      this.container.innerHTML = `
+        <div class="ai-chat-widget">
+          <div class="ai-chat-header">
+            <div class="ai-header-icon">
+              ${this.getIcon("robot")}
+            </div>
+            <div class="ai-header-info">
+              <h2>${this.config.headerTitle}</h2>
+              <p><span class="ai-status-dot"></span> ${this.config.headerSubtitle}</p>
+            </div>
+          </div>
+
+          <div class="ai-messages-container">
+            <div class="ai-welcome-message">
+              <div class="ai-welcome-icon">
+                ${this.getIcon("comments")}
+              </div>
+              <h3>Start a conversation</h3>
+              <p>I'm here to help you with anything you need!</p>
+            </div>
+          </div>
+
+          <div class="ai-input-container">
+            <div class="ai-input-wrapper">
+              <input
+                type="text"
+                class="ai-message-input"
+                placeholder="Type your message..."
+                autocomplete="off"
+              />
+              <button class="ai-send-button">
+                ${this.getIcon("send")}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <button class="ai-chat-button">
+          ${this.getIcon("comments")}
+        </button>
+      `;
+
+      // Create overlay
+      this.overlay = document.createElement("div");
+      this.overlay.className = "ai-chat-overlay";
+
+      document.body.appendChild(this.overlay);
+      document.body.appendChild(this.container);
+
+      // Cache DOM elements
+      this.elements = {
+        button: this.container.querySelector(".ai-chat-button"),
+        widget: this.container.querySelector(".ai-chat-widget"),
+        messagesContainer: this.container.querySelector(
+          ".ai-messages-container",
+        ),
+        welcomeMessage: this.container.querySelector(".ai-welcome-message"),
+        input: this.container.querySelector(".ai-message-input"),
+        sendButton: this.container.querySelector(".ai-send-button"),
+      };
+    }
+
+    getIcon(name) {
+      const icons = {
+        robot:
+          '<svg viewBox="0 0 640 512" fill="currentColor" style="width:1em;height:1em"><path d="M320 0c17.7 0 32 14.3 32 32V96H472c39.8 0 72 32.2 72 72V440c0 39.8-32.2 72-72 72H168c-39.8 0-72-32.2-72-72V168c0-39.8 32.2-72 72-72H288V32c0-17.7 14.3-32 32-32zM208 384c-8.8 0-16 7.2-16 16s7.2 16 16 16h32c8.8 0 16-7.2 16-16s-7.2-16-16-16H208zm96 0c-8.8 0-16 7.2-16 16s7.2 16 16 16h32c8.8 0 16-7.2 16-16s-7.2-16-16-16H304zm96 0c-8.8 0-16 7.2-16 16s7.2 16 16 16h32c8.8 0 16-7.2 16-16s-7.2-16-16-16H400zM264 256a40 40 0 1 0 -80 0 40 40 0 1 0 80 0zm152 40a40 40 0 1 0 0-80 40 40 0 1 0 0 80z"/></svg>',
+        comments:
+          '<svg viewBox="0 0 640 512" fill="currentColor" style="width:1em;height:1em"><path d="M208 352c114.9 0 208-78.8 208-176S322.9 0 208 0S0 78.8 0 176c0 38.6 14.7 74.3 39.6 103.4c-3.5 9.4-8.7 17.7-14.2 24.7c-4.8 6.2-9.7 11-13.3 14.3c-1.8 1.6-3.3 2.9-4.3 3.7c-.5 .4-.9 .7-1.1 .8l-.2 .2 0 0 0 0C1 327.2-1.4 334.4 .8 340.9S9.1 352 16 352c21.8 0 43.8-5.6 62.1-12.5c9.2-3.5 17.8-7.4 25.3-11.4C134.1 343.3 169.8 352 208 352zM448 176c0 112.3-99.1 196.9-216.5 207C255.8 457.4 336.4 512 432 512c38.2 0 73.9-8.7 104.7-23.9c7.5 4 16 7.9 25.2 11.4c18.3 6.9 40.3 12.5 62.1 12.5c6.9 0 13.1-4.5 15.2-11.1c2.1-6.6-.2-13.8-5.8-17.9l0 0 0 0-.2-.2c-.2-.2-.6-.4-1.1-.8c-1-.8-2.5-2-4.3-3.7c-3.6-3.3-8.5-8.1-13.3-14.3c-5.5-7-10.7-15.4-14.2-24.7c24.9-29 39.6-64.7 39.6-103.4c0-92.8-84.9-168.9-192.6-175.5c.4 5.1 .6 10.3 .6 15.5z"/></svg>',
+        user: '<svg viewBox="0 0 448 512" fill="currentColor" style="width:1em;height:1em"><path d="M224 256A128 128 0 1 0 224 0a128 128 0 1 0 0 256zm-45.7 48C79.8 304 0 383.8 0 482.3C0 498.7 13.3 512 29.7 512H418.3c16.4 0 29.7-13.3 29.7-29.7C448 383.8 368.2 304 269.7 304H178.3z"/></svg>',
+        send: '<svg viewBox="0 0 512 512" fill="currentColor" style="width:1em;height:1em"><path d="M498.1 5.6c10.1 7 15.4 19.1 13.5 31.2l-64 416c-1.5 9.7-7.4 18.2-16 23s-18.9 5.4-28 1.6L284 427.7l-68.5 74.1c-8.9 9.7-22.9 12.9-35.2 8.1S160 493.2 160 480V396.4c0-4 1.5-7.8 4.2-10.7L331.8 202.8c5.8-6.3 5.6-16-.4-22s-15.7-6.4-22-.7L106 360.8 17.7 316.6C7.1 311.3 .3 300.7 0 288.9s5.9-22.8 16.1-28.7l448-256c10.7-6.1 23.9-5.5 34 1.4z"/></svg>',
+        times:
+          '<svg viewBox="0 0 384 512" fill="currentColor" style="width:1em;height:1em"><path d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3 297.4 406.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256 342.6 150.6z"/></svg>',
+      };
+      return icons[name] || "";
+    }
+
+    attachEventListeners() {
+      this.elements.button.addEventListener("click", () => this.toggleChat());
+      this.overlay.addEventListener("click", () => this.closeChat());
+      this.elements.sendButton.addEventListener("click", () =>
+        this.sendMessage(),
+      );
+      this.elements.input.addEventListener("keypress", (e) => {
+        if (e.key === "Enter" && !this.waitingForResponse) {
+          this.sendMessage();
+        }
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && this.isChatOpen) {
+          this.closeChat();
+        }
+      });
+    }
+
+    toggleChat() {
+      this.isChatOpen ? this.closeChat() : this.openChat();
+    }
+
+    openChat() {
+      this.isChatOpen = true;
       this.elements.widget.classList.add("active");
-      this.elements.overlay.classList.add("active");
+      this.overlay.classList.add("active");
       this.elements.button.classList.add("active");
-      this.elements.button.innerHTML = '<i class="fas fa-times"></i>';
+      this.elements.button.innerHTML = this.getIcon("times");
       this.elements.input.focus();
 
       if (!this.hasShownWelcome) {
         this.hasShownWelcome = true;
-        this.elements.welcome.style.display = "none";
-        setTimeout(
-          () => this._addMessage("bot", this.config.welcomeMessage),
-          300,
-        );
-      } else if (this.elements.messages.children.length > 1) {
-        this.elements.welcome.style.display = "none";
+        this.elements.welcomeMessage.style.display = "none";
+        setTimeout(() => {
+          this.addMessage("bot", this.config.greeting);
+        }, 300);
+      } else if (this.elements.messagesContainer.children.length > 1) {
+        this.elements.welcomeMessage.style.display = "none";
       }
 
-      this._emit("open");
+      // Trigger custom event
+      this.triggerEvent("chatOpened");
     }
 
-    /** Close the chat widget */
-    close() {
-      this.isOpen = false;
+    closeChat() {
+      this.isChatOpen = false;
       this.elements.widget.classList.remove("active");
-      this.elements.overlay.classList.remove("active");
+      this.overlay.classList.remove("active");
       this.elements.button.classList.remove("active");
-      this.elements.button.innerHTML = '<i class="fas fa-comments"></i>';
-      this._emit("close");
+      this.elements.button.innerHTML = this.getIcon("comments");
+
+      // Trigger custom event
+      this.triggerEvent("chatClosed");
     }
 
-    /** Toggle open/close */
-    toggle() {
-      this.isOpen ? this.close() : this.open();
-    }
+    async sendMessage() {
+      const message = this.elements.input.value.trim();
 
-    /** Remove the widget from the page entirely */
-    destroy() {
-      if (this.elements.container) this.elements.container.remove();
-      if (this.elements.overlay) this.elements.overlay.remove();
-      if (!document.querySelector("[data-chatbot-sdk]")) {
-        const s = document.getElementById("chatbot-sdk-styles");
-        if (s) s.remove();
-      }
-      this._emit("destroyed");
-    }
-
-    /**
-     * Register an event listener
-     * Events: ready | open | close | messageSent | messageReceived | error | destroyed
-     */
-    on(event, callback) {
-      if (!this.eventHandlers[event]) this.eventHandlers[event] = [];
-      this.eventHandlers[event].push(callback);
-      return this;
-    }
-
-    // ─── Messaging ───────────────────────────────────────────────────────────
-
-    async sendMessage(text = null) {
-      const message = text || this.elements.input.value.trim();
       if (!message || this.isTyping || this.waitingForResponse) return;
 
-      // User typed a number — treat as option selection
+      // Handle numeric option selection
       if (this.currentOptions && /^\d+$/.test(message)) {
-        const idx = parseInt(message, 10) - 1;
-        if (idx >= 0 && idx < this.currentOptions.options.length) {
-          const opt = this.currentOptions.options[idx];
-          const displayName = opt.name || opt.type;
+        const optionIndex = parseInt(message) - 1;
+
+        if (
+          optionIndex >= 0 &&
+          optionIndex < this.currentOptions.options.length
+        ) {
+          const selectedOption = this.currentOptions.options[optionIndex];
 
           if (this.currentOptions.type === "location") {
-            this.bookingState.locationId = opt.id;
+            this.bookingState.locationId = selectedOption.id;
           } else if (this.currentOptions.type === "appointmentType") {
-            this.bookingState.appointmentTypeId = opt.id;
+            this.bookingState.appointmentTypeId = selectedOption.id;
           }
 
-          this.elements.input.value = "";
-          this._removeOptionsContainer();
-          this.currentOptions = null;
+          const optionsContainer = this.container.querySelector(
+            ".ai-options-container",
+          );
+          if (optionsContainer) {
+            optionsContainer.remove();
+          }
 
-          this._addMessage("user", displayName);
-          await this._dispatchToAPI(opt.id.toString(), null);
-          return;
+          this.currentOptions = null;
         }
       }
 
       if (
-        this.elements.welcome &&
-        this.elements.welcome.style.display !== "none"
+        this.elements.welcomeMessage &&
+        this.elements.welcomeMessage.style.display !== "none"
       ) {
-        this.elements.welcome.style.display = "none";
+        this.elements.welcomeMessage.style.display = "none";
       }
 
-      this._addMessage("user", message);
+      this.addMessage("user", message);
       this.elements.input.value = "";
-      await this._dispatchToAPI(message, null);
-    }
-
-    // ─── Private: API calls ──────────────────────────────────────────────────
-
-    async _dispatchToAPI(message, extra) {
-      this._showTyping();
-      this._setInputLocked(true);
-      this._emit("messageSent", { message });
+      this.showTyping();
+      this.isTyping = true;
+      this.waitingForResponse = true;
+      this.elements.sendButton.disabled = true;
+      this.elements.input.disabled = true;
 
       try {
-        const res = await fetch(this.config.apiUrl, {
+        const response = await fetch(this.config.apiUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sessionId: this.sessionId,
-            message,
+            message: message,
             patientId: this.bookingState.patientId,
             bookingState: this.bookingState,
-            extra: extra || null,
+            extra: null,
           }),
         });
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-        const data = await res.json();
-        this._removeTyping();
-        this._handleResponse(data.reply);
-        this._emit("messageReceived", { reply: data.reply });
-      } catch (err) {
-        console.error("[ChatbotSDK] Fetch error:", err);
-        this._removeTyping();
-        this._addMessage(
+        const data = await response.json();
+        this.removeTyping();
+        this.handleBackendResponse(data.reply);
+
+        // Trigger custom event
+        this.triggerEvent("messageSent", { message, response: data });
+      } catch (error) {
+        console.error("AI Chat Widget Error:", error);
+        this.removeTyping();
+        this.addMessage(
           "bot",
           "Sorry, I'm having trouble connecting. Please try again.",
         );
-        this._emit("error", { error: err });
+
+        // Trigger custom event
+        this.triggerEvent("error", { error });
       } finally {
-        this._setInputLocked(false);
+        this.isTyping = false;
+        this.waitingForResponse = false;
+        this.elements.sendButton.disabled = false;
+        this.elements.input.disabled = false;
+        this.elements.input.focus();
       }
     }
 
-    async _sendSelection(value, selectionType = null, extra = null) {
-      this._showTyping();
-      this._setInputLocked(true);
-
-      try {
-        const res = await fetch(this.config.apiUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId: this.sessionId,
-            message: value,
-            patientId: this.bookingState.patientId,
-            bookingState: this.bookingState,
-            extra: extra || null,
-          }),
-        });
-
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-
-        const data = await res.json();
-        this._removeTyping();
-        this._handleResponse(data.reply);
-      } catch (err) {
-        console.error("[ChatbotSDK] Selection error:", err);
-        this._removeTyping();
-        this._addMessage(
-          "bot",
-          "Sorry, there was an error processing your selection.",
-        );
-      } finally {
-        this._setInputLocked(false);
-      }
-    }
-
-    // ─── Private: Response handling ──────────────────────────────────────────
-
-    _handleResponse(reply) {
-      if (!reply) return;
-
-      // ── State clearing ────────────────────────────────────────────────────
+    handleBackendResponse(reply) {
+      // Handle state clearing signals
       if (reply.type === "restart_booking" || reply.clearState) {
         this.bookingState = {
           patientId: null,
@@ -278,7 +765,10 @@
           appointmentTypeId: null,
           selectedSlot: null,
         };
-        this._removeOptionsContainer();
+        const optionsContainer = this.container.querySelector(
+          ".ai-options-container",
+        );
+        if (optionsContainer) optionsContainer.remove();
         this.currentOptions = null;
       }
 
@@ -290,128 +780,79 @@
         this.bookingState.locationId = null;
         this.bookingState.appointmentTypeId = null;
         this.bookingState.selectedSlot = null;
-        this._removeOptionsContainer();
+        const optionsContainer = this.container.querySelector(
+          ".ai-options-container",
+        );
+        if (optionsContainer) optionsContainer.remove();
         this.currentOptions = null;
       }
 
       if (reply.clearAppointmentType) {
         this.bookingState.appointmentTypeId = null;
         this.bookingState.selectedSlot = null;
-        this._removeOptionsContainer();
+        const optionsContainer = this.container.querySelector(
+          ".ai-options-container",
+        );
+        if (optionsContainer) optionsContainer.remove();
         this.currentOptions = null;
       }
 
       if (reply.clearSlot) {
         this.bookingState.selectedSlot = null;
-        this._removeOptionsContainer();
+        const optionsContainer = this.container.querySelector(
+          ".ai-options-container",
+        );
+        if (optionsContainer) optionsContainer.remove();
         this.currentOptions = null;
       }
 
-      // ── Update patientId (first time only) ────────────────────────────────
+      // Update patientId if present
       if (reply.patientId && !this.bookingState.patientId) {
         this.bookingState.patientId = reply.patientId;
       }
 
-      // ── Show AI message first if present ──────────────────────────────────
+      // Always display AI message first if present
       if (reply.aiMessage) {
-        this._addMessage("bot", reply.aiMessage);
+        this.addMessage("bot", reply.aiMessage);
       }
 
-      // ── Response type handler ─────────────────────────────────────────────
+      // Handle different response types
       switch (reply.type) {
-        case "restart_booking":
-        case "clear_patient":
-          break;
-
         case "patient_verified":
-          if (reply.patientId) this.bookingState.patientId = reply.patientId;
-          if (!reply.aiMessage && reply.patient) {
-            this._addMessage(
-              "bot",
-              `✅ Patient verified: ${reply.patient.first_name} ${reply.patient.last_name}`,
-            );
-          }
-          break;
-
-        case "patient_not_found":
-          if (!reply.aiMessage) {
-            this._addMessage(
-              "bot",
-              "No patient found. Please contact our support team for assistance.",
-            );
-          }
-          break;
-
-        case "multiple_patients_found":
-          if (!reply.aiMessage) {
-            this._addMessage(
-              "bot",
-              `Found ${reply.count} patients with that name. Please provide your email address.`,
-            );
-          }
-          break;
-
-        case "email_not_found":
-          if (!reply.aiMessage) {
-            this._addMessage(
-              "bot",
-              "No patient found with that email. Please provide your phone number.",
-            );
+          if (reply.patientId) {
+            this.bookingState.patientId = reply.patientId;
           }
           break;
 
         case "locations_list":
-          if (!reply.aiMessage) {
-            this._addMessage(
-              "bot",
-              "Please select a location where you want to book an appointment:",
-            );
-          }
           if (reply.data && reply.data.length > 0) {
-            this._renderOptions("location", reply.data);
+            this.renderOptions("location", reply.data);
           }
           break;
 
         case "appointment_types_list":
-          if (!reply.aiMessage) {
-            this._addMessage("bot", "Please select the type of appointment:");
-          }
           if (reply.data && reply.data.length > 0) {
-            this._renderOptions("appointmentType", reply.data);
+            this.renderOptions("appointmentType", reply.data);
           }
           break;
 
         case "available_slots":
           if (reply.data && reply.data.length > 0) {
-            if (!reply.aiMessage) {
-              this._addMessage("bot", "Please select an available time slot:");
-            }
-            this._renderSlotOptions(reply.data);
+            this.renderSlotOptions(reply.data);
           } else {
             if (!reply.aiMessage) {
-              this._addMessage(
+              this.addMessage(
                 "bot",
                 "No available slots found for the selected dates.",
               );
             }
             if (reply.unavailableDates && reply.unavailableDates.length > 0) {
-              this._renderNoSlotsMessage(reply.unavailableDates);
+              this.renderNoSlotsMessage(reply.unavailableDates);
             }
-            this._addMessage(
-              "bot",
-              "Would you like to:\n1. Try a different location\n2. Try a different appointment type\n3. Contact support for assistance\n\nPlease let me know how I can help!",
-            );
           }
           break;
 
         case "appointment_confirmed":
-          if (!reply.aiMessage) {
-            this._addMessage(
-              "bot",
-              reply.message ||
-                "🎉 Your appointment has been booked successfully!",
-            );
-          }
           this.bookingState = {
             patientId: this.bookingState.patientId,
             locationId: null,
@@ -420,565 +861,265 @@
           };
           break;
 
-        case "message":
-          if (!reply.aiMessage && reply.message) {
-            this._addMessage("bot", reply.message);
-          }
-          break;
-
         case "error":
+          const errorMsg =
+            reply.aiMessage || reply.message || "Sorry, something went wrong.";
           if (!reply.aiMessage) {
-            this._addMessage(
-              "bot",
-              `❌ ${reply.message || "Sorry, something went wrong."}`,
-            );
-          }
-          break;
-
-        default:
-          if (!reply.aiMessage) {
-            this._addMessage(
-              "bot",
-              reply.message || "I couldn't process that request.",
-            );
+            this.addMessage("bot", `❌ ${errorMsg}`);
           }
           break;
       }
     }
 
-    // ─── Private: DOM helpers ────────────────────────────────────────────────
-
-    _addMessage(sender, text) {
-      const wrap = document.createElement("div");
-      wrap.className = `chatbot-sdk-message ${sender}`;
+    addMessage(sender, text) {
+      const messageDiv = document.createElement("div");
+      messageDiv.className = `ai-message ${sender}`;
 
       const time = new Date().toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
       });
-      const iconClass = sender === "bot" ? "fas fa-robot" : "fas fa-user";
 
-      const avatar = document.createElement("div");
-      avatar.className = "chatbot-sdk-avatar";
-      avatar.innerHTML = `<i class="${iconClass}"></i>`;
+      const avatarIcon =
+        sender === "bot" ? this.getIcon("robot") : this.getIcon("user");
 
-      const content = document.createElement("div");
-      content.className = "chatbot-sdk-message-content";
+      messageDiv.innerHTML = `
+        <div class="ai-message-avatar">
+          ${avatarIcon}
+        </div>
+        <div class="ai-message-content">
+          <div class="ai-message-bubble">${this.escapeHtml(text)}</div>
+          <div class="ai-message-time">${time}</div>
+        </div>
+      `;
 
-      const bubble = document.createElement("div");
-      bubble.className = "chatbot-sdk-bubble";
-      bubble.innerHTML = this._escapeHtml(text);
-
-      const timeEl = document.createElement("div");
-      timeEl.className = "chatbot-sdk-time";
-      timeEl.textContent = time;
-
-      content.appendChild(bubble);
-      content.appendChild(timeEl);
-      wrap.appendChild(avatar);
-      wrap.appendChild(content);
-      this.elements.messages.appendChild(wrap);
-      this._scrollToBottom();
+      this.elements.messagesContainer.appendChild(messageDiv);
+      this.scrollToBottom();
     }
 
-    _showTyping() {
-      const wrap = document.createElement("div");
-      wrap.className = "chatbot-sdk-message bot";
-      wrap.id = `${this.instanceId}-typing`;
+    showTyping() {
+      const typingDiv = document.createElement("div");
+      typingDiv.className = "ai-message bot";
+      typingDiv.id = "ai-typing-indicator";
+      typingDiv.innerHTML = `
+        <div class="ai-message-avatar">
+          ${this.getIcon("robot")}
+        </div>
+        <div class="ai-message-content">
+          <div class="ai-message-bubble">
+            <div class="ai-typing-indicator">
+              <div class="ai-typing-dot"></div>
+              <div class="ai-typing-dot"></div>
+              <div class="ai-typing-dot"></div>
+            </div>
+          </div>
+        </div>
+      `;
 
-      const avatar = document.createElement("div");
-      avatar.className = "chatbot-sdk-avatar";
-      avatar.innerHTML = '<i class="fas fa-robot"></i>';
-
-      const content = document.createElement("div");
-      content.className = "chatbot-sdk-message-content";
-
-      const bubble = document.createElement("div");
-      bubble.className = "chatbot-sdk-bubble";
-      bubble.innerHTML = `
-        <div class="chatbot-sdk-typing">
-          <div class="chatbot-sdk-typing-dot"></div>
-          <div class="chatbot-sdk-typing-dot"></div>
-          <div class="chatbot-sdk-typing-dot"></div>
-        </div>`;
-
-      content.appendChild(bubble);
-      wrap.appendChild(avatar);
-      wrap.appendChild(content);
-      this.elements.messages.appendChild(wrap);
-      this._scrollToBottom();
+      this.elements.messagesContainer.appendChild(typingDiv);
+      this.scrollToBottom();
     }
 
-    _removeTyping() {
-      const el = document.getElementById(`${this.instanceId}-typing`);
-      if (el) el.remove();
+    removeTyping() {
+      const typingIndicator = document.getElementById("ai-typing-indicator");
+      if (typingIndicator) {
+        typingIndicator.remove();
+      }
     }
 
-    _removeOptionsContainer() {
-      const el =
-        this.elements.messages &&
-        this.elements.messages.querySelector(".chatbot-sdk-options");
-      if (el) el.remove();
-    }
-
-    _renderOptions(optionType, options) {
-      this._removeOptionsContainer();
-      this.currentOptions = { type: optionType, options };
+    renderOptions(optionType, options) {
+      this.currentOptions = { type: optionType, options: options };
 
       const container = document.createElement("div");
-      container.className = "chatbot-sdk-options";
+      container.className = "ai-options-container";
 
       options.forEach((opt, index) => {
         const btn = document.createElement("button");
-        btn.className = "chatbot-sdk-option-btn";
-        btn.type = "button";
+        btn.className = "ai-option-button";
         btn.textContent = `${index + 1}. ${opt.name || opt.type}`;
 
-        const capturedOpt = opt;
-        const capturedType = optionType;
+        btn.onclick = () => {
+          this.addMessage("user", opt.name || opt.type);
 
-        btn.addEventListener("click", () => {
-          this._addMessage("user", capturedOpt.name || capturedOpt.type);
-
-          if (capturedType === "location") {
-            this.bookingState.locationId = capturedOpt.id;
-          } else if (capturedType === "appointmentType") {
-            this.bookingState.appointmentTypeId = capturedOpt.id;
+          if (optionType === "location") {
+            this.bookingState.locationId = opt.id;
+          } else if (optionType === "appointmentType") {
+            this.bookingState.appointmentTypeId = opt.id;
           }
 
+          this.sendSelection(opt.id.toString(), optionType);
           container.remove();
           this.currentOptions = null;
-          this._sendSelection(capturedOpt.id.toString(), capturedType);
-        });
+        };
 
         container.appendChild(btn);
       });
 
-      this.elements.messages.appendChild(container);
-      this._scrollToBottom();
+      this.elements.messagesContainer.appendChild(container);
+      this.scrollToBottom();
     }
 
-    _renderSlotOptions(slots) {
-      this._removeOptionsContainer();
-
+    renderSlotOptions(slots) {
       const container = document.createElement("div");
-      container.className = "chatbot-sdk-options";
+      container.className = "ai-options-container";
 
       slots.forEach((slot, index) => {
         const btn = document.createElement("button");
-        btn.className = "chatbot-sdk-option-btn";
-        btn.type = "button";
+        btn.className = "ai-option-button";
 
         const startDate = new Date(slot.start.replace(" ", "T"));
-        const dateLabel = startDate.toLocaleDateString("en-US", {
-          weekday: "short",
-          month: "short",
-          day: "numeric",
-        });
-        const practitioner = slot.practitionerName
-          ? ` (${slot.practitionerName})`
-          : "";
-        const displayText = `${index + 1}. ${dateLabel} - ${slot.title}${practitioner}`;
+        const displayText = `${index + 1}. ${startDate.toLocaleDateString(
+          "en-US",
+          {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+          },
+        )} - ${slot.title}${slot.practitionerName ? ` (${slot.practitionerName})` : ""}`;
 
         btn.textContent = displayText;
 
-        const capturedSlot = slot;
-        const capturedDisplay = displayText;
-
-        btn.addEventListener("click", () => {
-          this._addMessage("user", capturedDisplay.replace(/^\d+\.\s*/, ""));
+        btn.onclick = () => {
+          this.addMessage("user", displayText.substring(3));
 
           this.bookingState.selectedSlot = {
-            id: capturedSlot.id,
-            practitionerId: capturedSlot.practitionerId,
-            start: capturedSlot.start,
-            end: capturedSlot.end,
-            practitionerName: capturedSlot.practitionerName,
+            id: slot.id,
+            practitionerId: slot.practitionerId,
+            start: slot.start,
+            end: slot.end,
+            practitionerName: slot.practitionerName,
           };
 
-          container.remove();
-          this._sendSelection(`slot_${capturedSlot.id}`, "slot", {
-            practitionerId: capturedSlot.practitionerId,
-            start: capturedSlot.start,
-            end: capturedSlot.end,
+          this.sendSelection(`slot_${slot.id}`, "slot", {
+            practitionerId: slot.practitionerId,
+            start: slot.start,
+            end: slot.end,
           });
-        });
+          container.remove();
+        };
 
         container.appendChild(btn);
       });
 
-      this.elements.messages.appendChild(container);
-      this._scrollToBottom();
+      this.elements.messagesContainer.appendChild(container);
+      this.scrollToBottom();
     }
 
-    _renderNoSlotsMessage(unavailableDates) {
-      const el = document.createElement("div");
-      el.className = "chatbot-sdk-info";
+    renderNoSlotsMessage(unavailableDates) {
+      const container = document.createElement("div");
+      container.className = "ai-info-message";
 
-      const from = unavailableDates[0];
-      const to = unavailableDates[unavailableDates.length - 1];
-      const range =
+      const dateRange =
         unavailableDates.length > 0
-          ? `${from} to ${to}`
+          ? `${unavailableDates[0]} to ${unavailableDates[unavailableDates.length - 1]}`
           : "the selected period";
 
-      const icon = document.createElement("i");
-      icon.className = "fas fa-info-circle";
-      icon.style.marginRight = "8px";
+      container.innerHTML = `
+        <strong>No appointments available</strong> for ${dateRange}.
+      `;
 
-      const strong = document.createElement("strong");
-      strong.textContent = "No appointments available";
-
-      el.appendChild(icon);
-      el.appendChild(strong);
-      el.appendChild(document.createTextNode(` for ${range}.`));
-
-      this.elements.messages.appendChild(el);
-      this._scrollToBottom();
+      this.elements.messagesContainer.appendChild(container);
+      this.scrollToBottom();
     }
 
-    _setInputLocked(locked) {
-      this.isTyping = locked;
-      this.waitingForResponse = locked;
-      this.elements.send.disabled = locked;
-      this.elements.input.disabled = locked;
-      if (!locked) this.elements.input.focus();
+    async sendSelection(value, selectionType = null, extra = null) {
+      this.showTyping();
+      this.isTyping = true;
+      this.waitingForResponse = true;
+      this.elements.sendButton.disabled = true;
+      this.elements.input.disabled = true;
+
+      try {
+        const payload = {
+          sessionId: this.sessionId,
+          message: value,
+          patientId: this.bookingState.patientId,
+          bookingState: this.bookingState,
+          extra: extra,
+        };
+
+        const response = await fetch(this.config.apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        this.removeTyping();
+        this.handleBackendResponse(data.reply);
+      } catch (err) {
+        console.error("Selection error:", err);
+        this.removeTyping();
+        this.addMessage(
+          "bot",
+          "Sorry, there was an error processing your selection.",
+        );
+      } finally {
+        this.isTyping = false;
+        this.waitingForResponse = false;
+        this.elements.sendButton.disabled = false;
+        this.elements.input.disabled = false;
+        this.elements.input.focus();
+      }
     }
 
-    _scrollToBottom() {
-      setTimeout(() => {
-        this.elements.messages.scrollTop = this.elements.messages.scrollHeight;
-      }, 100);
-    }
-
-    _escapeHtml(text) {
+    escapeHtml(text) {
       const div = document.createElement("div");
-      div.textContent = String(text);
+      div.textContent = text;
       return div.innerHTML.replace(/\n/g, "<br>");
     }
 
-    _escapeConfig(val) {
-      return String(val).replace(
-        /[&<>"']/g,
-        (c) =>
-          ({
-            "&": "&amp;",
-            "<": "&lt;",
-            ">": "&gt;",
-            '"': "&quot;",
-            "'": "&#39;",
-          })[c],
-      );
+    scrollToBottom() {
+      setTimeout(() => {
+        this.elements.messagesContainer.scrollTop =
+          this.elements.messagesContainer.scrollHeight;
+      }, 100);
     }
 
-    // ─── Private: Initialisation ─────────────────────────────────────────────
-
-    _generateUUID() {
-      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-        const r = (Math.random() * 16) | 0;
-        return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    triggerEvent(eventName, data = {}) {
+      const event = new CustomEvent(`aiChatWidget:${eventName}`, {
+        detail: { widget: this, ...data },
       });
+      window.dispatchEvent(event);
     }
 
-    _injectStyles() {
-      if (document.getElementById("chatbot-sdk-styles")) return;
-      const style = document.createElement("style");
-      style.id = "chatbot-sdk-styles";
-      style.textContent = this._getStyles();
-      document.head.appendChild(style);
+    // Public API methods
+    destroy() {
+      if (this.container) {
+        this.container.remove();
+      }
+      if (this.overlay) {
+        this.overlay.remove();
+      }
+      const style = document.getElementById("ai-chat-widget-styles");
+      if (style) {
+        style.remove();
+      }
     }
 
-    _getStyles() {
-      const themes = {
-        blue: { primary: "#007aff", primaryDark: "#0056cc" },
-        green: { primary: "#34c759", primaryDark: "#28a745" },
-        purple: { primary: "#af52de", primaryDark: "#8e44ad" },
-        red: { primary: "#ff3b30", primaryDark: "#dc3545" },
-        orange: { primary: "#ff9500", primaryDark: "#e68600" },
-      };
-      const t = themes[this.config.theme] || themes.blue;
-
-      return `
-        :root {
-          --chatbot-primary:      ${t.primary};
-          --chatbot-primary-dark: ${t.primaryDark};
-          --chatbot-bot-bg:       #f2f2f7;
-          --chatbot-user-bg:      ${t.primary};
-          --chatbot-text-dark:    #1d1d1f;
-          --chatbot-text-light:   #86868b;
-          --chatbot-border:       #e5e5ea;
-          --chatbot-shadow:       0 4px 24px rgba(0,0,0,0.1);
-          --chatbot-radius:       16px;
-          --chatbot-widget-size:  64px;
-        }
-
-        .chatbot-sdk * {
-          margin:0; padding:0; box-sizing:border-box;
-          font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-        }
-
-        .chatbot-sdk-container {
-          position:fixed;
-          ${this._getPositionStyles()}
-          z-index:999999;
-        }
-
-        .chatbot-sdk-button {
-          width:var(--chatbot-widget-size); height:var(--chatbot-widget-size);
-          border-radius:50%; background:var(--chatbot-primary); color:white;
-          border:none; cursor:pointer; display:flex; align-items:center;
-          justify-content:center; font-size:20px;
-          box-shadow:0 6px 20px rgba(0,122,255,0.3);
-          transition:all 0.3s ease; position:relative; z-index:1000001;
-        }
-        .chatbot-sdk-button:hover  { background:var(--chatbot-primary-dark); transform:scale(1.05); box-shadow:0 8px 25px rgba(0,122,255,0.4); }
-        .chatbot-sdk-button.active { transform:rotate(90deg); background:#ff3b30; }
-        .chatbot-sdk-button.active:hover { background:#d70015; }
-
-        .chatbot-sdk-widget {
-          width:400px; height:600px; background:white;
-          border-radius:var(--chatbot-radius); box-shadow:var(--chatbot-shadow);
-          overflow:hidden; display:flex; flex-direction:column;
-          position:absolute; bottom:80px; right:0;
-          opacity:0; visibility:hidden; transform:translateY(20px);
-          transition:all 0.3s ease;
-        }
-        .chatbot-sdk-widget.active { opacity:1; visibility:visible; transform:translateY(0); }
-
-        .chatbot-sdk-header {
-          padding:16px 20px; background:white;
-          border-bottom:1px solid var(--chatbot-border);
-          display:flex; align-items:center; gap:12px; flex-shrink:0;
-        }
-        .chatbot-sdk-header-icon {
-          width:36px; height:36px; background:var(--chatbot-primary);
-          border-radius:10px; display:flex; align-items:center;
-          justify-content:center; color:white; font-size:15px;
-        }
-        .chatbot-sdk-header-info h2 { font-size:17px; font-weight:600; color:var(--chatbot-text-dark); }
-        .chatbot-sdk-header-info p  { font-size:13px; color:var(--chatbot-text-light); margin-top:2px; }
-
-        .chatbot-sdk-status-dot {
-          width:8px; height:8px; background:#30d158; border-radius:50%;
-          margin-right:6px; display:inline-block; animation:chatbot-pulse 2s infinite;
-        }
-        @keyframes chatbot-pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
-
-        .chatbot-sdk-messages { flex:1; overflow-y:auto; padding:20px; background:#fafafa; }
-
-        .chatbot-sdk-message {
-          display:flex; gap:8px; margin-bottom:16px;
-          animation:chatbot-fadeIn 0.3s ease;
-        }
-        @keyframes chatbot-fadeIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
-
-        .chatbot-sdk-message.bot  { align-items:flex-start; }
-        .chatbot-sdk-message.user { align-items:flex-end; flex-direction:row-reverse; }
-
-        .chatbot-sdk-avatar {
-          width:32px; height:32px; border-radius:50%;
-          display:flex; align-items:center; justify-content:center;
-          flex-shrink:0; font-size:13px;
-        }
-        .chatbot-sdk-message.bot  .chatbot-sdk-avatar { background:var(--chatbot-bot-bg); color:var(--chatbot-primary); }
-        .chatbot-sdk-message.user .chatbot-sdk-avatar { background:var(--chatbot-user-bg); color:white; }
-
-        .chatbot-sdk-message-content { max-width:70%; }
-        .chatbot-sdk-message.bot  .chatbot-sdk-message-content { margin-right:auto; }
-        .chatbot-sdk-message.user .chatbot-sdk-message-content { margin-left:auto; }
-
-        .chatbot-sdk-bubble {
-          padding:12px 16px; border-radius:18px;
-          line-height:1.4; font-size:15px; word-wrap:break-word;
-        }
-        .chatbot-sdk-message.bot  .chatbot-sdk-bubble {
-          background:white; color:var(--chatbot-text-dark);
-          border:1px solid var(--chatbot-border); border-bottom-left-radius:4px;
-        }
-        .chatbot-sdk-message.user .chatbot-sdk-bubble {
-          background:var(--chatbot-user-bg); color:white; border-bottom-right-radius:4px;
-        }
-
-        .chatbot-sdk-time { font-size:11px; color:var(--chatbot-text-light); margin-top:4px; text-align:right; }
-        .chatbot-sdk-message.user .chatbot-sdk-time { color:rgba(255,255,255,0.7); }
-
-        .chatbot-sdk-typing { display:flex; align-items:center; gap:4px; padding:4px 0; }
-        .chatbot-sdk-typing-dot {
-          width:6px; height:6px; background:var(--chatbot-text-light);
-          border-radius:50%; animation:chatbot-typing 1.4s infinite ease-in-out;
-        }
-        .chatbot-sdk-typing-dot:nth-child(1){animation-delay:-0.32s}
-        .chatbot-sdk-typing-dot:nth-child(2){animation-delay:-0.16s}
-        @keyframes chatbot-typing { 0%,80%,100%{transform:scale(0.8);opacity:0.5} 40%{transform:scale(1);opacity:1} }
-
-        .chatbot-sdk-input-container {
-          padding:16px 20px; background:white;
-          border-top:1px solid var(--chatbot-border); flex-shrink:0;
-        }
-        .chatbot-sdk-input-wrapper { display:flex; gap:12px; align-items:center; }
-
-        .chatbot-sdk-input {
-          flex:1; padding:12px 16px; border:1px solid var(--chatbot-border);
-          border-radius:20px; font-size:15px; outline:none;
-          transition:all 0.2s; background:#f2f2f7;
-        }
-        .chatbot-sdk-input:focus    { background:white; border-color:var(--chatbot-primary); }
-        .chatbot-sdk-input:disabled { background:#e5e5ea; cursor:not-allowed; opacity:0.6; }
-
-        .chatbot-sdk-send {
-          width:44px; height:44px; border-radius:50%;
-          background:var(--chatbot-primary); color:white;
-          border:none; cursor:pointer; display:flex; align-items:center;
-          justify-content:center; font-size:13px; transition:all 0.2s; flex-shrink:0;
-        }
-        .chatbot-sdk-send:hover    { background:var(--chatbot-primary-dark); transform:scale(1.05); }
-        .chatbot-sdk-send:disabled { background:var(--chatbot-text-light); cursor:not-allowed; transform:none; }
-
-        .chatbot-sdk-welcome { text-align:center; padding:40px 20px; color:var(--chatbot-text-light); }
-        .chatbot-sdk-welcome-icon { font-size:48px; color:var(--chatbot-primary); margin-bottom:16px; opacity:0.5; }
-        .chatbot-sdk-welcome h3 { font-size:18px; font-weight:600; color:var(--chatbot-text-dark); margin-bottom:8px; }
-        .chatbot-sdk-welcome p  { font-size:14px; }
-
-        .chatbot-sdk-options { margin:12px 0; padding:0 8px; }
-        .chatbot-sdk-option-btn {
-          display:block; width:100%; padding:12px 16px; margin:8px 0;
-          background:#f2f2f7; border:1px solid #e5e5ea; border-radius:10px;
-          text-align:left; font-size:15px; cursor:pointer;
-          transition:all 0.2s; font-family:inherit;
-        }
-        .chatbot-sdk-option-btn:hover    { background:#e5e5ea; border-color:var(--chatbot-primary); }
-        .chatbot-sdk-option-btn:active   { background:#d0d0d7; transform:scale(0.98); }
-        .chatbot-sdk-option-btn:disabled { opacity:0.5; cursor:not-allowed; }
-
-        .chatbot-sdk-info {
-          background:#fff3cd; border:1px solid #ffc107;
-          border-radius:10px; padding:12px 16px;
-          margin:12px 0; font-size:14px; color:#856404;
-        }
-
-        .chatbot-sdk-overlay {
-          position:fixed; top:0; left:0; width:100%; height:100%;
-          background:transparent; z-index:999998; display:none;
-        }
-        .chatbot-sdk-overlay.active { display:block; }
-
-        .chatbot-sdk-messages::-webkit-scrollbar       { width:6px; }
-        .chatbot-sdk-messages::-webkit-scrollbar-track  { background:transparent; }
-        .chatbot-sdk-messages::-webkit-scrollbar-thumb  { background:#c7c7cc; border-radius:3px; }
-
-        @media (max-width:480px) {
-          .chatbot-sdk-widget { width:calc(100vw - 40px); height:70vh; max-width:100%; }
-          .chatbot-sdk-container { bottom:20px !important; right:20px !important; }
-          .chatbot-sdk-message-content { max-width:80%; }
-        }
-      `;
+    open() {
+      this.openChat();
     }
 
-    _getPositionStyles() {
-      const positions = {
-        "bottom-right": "bottom:30px; right:30px;",
-        "bottom-left": "bottom:30px; left:30px;",
-        "top-right": "top:30px; right:30px;",
-        "top-left": "top:30px; left:30px;",
-      };
-      return positions[this.config.position] || positions["bottom-right"];
+    close() {
+      this.closeChat();
     }
 
-    _injectHTML() {
-      const safeTitle = this._escapeConfig(this.config.headerTitle);
-      const safeSubtitle = this._escapeConfig(this.config.headerSubtitle);
-      const safePlaceholder = this._escapeConfig(this.config.placeholder);
-      const id = this.instanceId;
-
-      const container = document.createElement("div");
-      container.className = "chatbot-sdk chatbot-sdk-container";
-      container.setAttribute("data-chatbot-sdk", id);
-
-      container.innerHTML = `
-        <div class="chatbot-sdk-widget" id="${id}-widget">
-
-          <div class="chatbot-sdk-header">
-            <div class="chatbot-sdk-header-icon">
-              <i class="fas fa-robot"></i>
-            </div>
-            <div class="chatbot-sdk-header-info">
-              <h2>${safeTitle}</h2>
-              <p><span class="chatbot-sdk-status-dot"></span>${safeSubtitle}</p>
-            </div>
-          </div>
-
-          <div class="chatbot-sdk-messages" id="${id}-messages">
-            <div class="chatbot-sdk-welcome" id="${id}-welcome">
-              <div class="chatbot-sdk-welcome-icon">
-                <i class="fas fa-comments"></i>
-              </div>
-              <h3>Start a conversation</h3>
-              <p>I'm here to help you with anything you need!</p>
-            </div>
-          </div>
-
-          <div class="chatbot-sdk-input-container">
-            <div class="chatbot-sdk-input-wrapper">
-              <input
-                type="text"
-                class="chatbot-sdk-input"
-                id="${id}-input"
-                placeholder="${safePlaceholder}"
-                autocomplete="off"
-              />
-              <button class="chatbot-sdk-send" id="${id}-send" type="button">
-                <i class="fas fa-paper-plane"></i>
-              </button>
-            </div>
-          </div>
-
-        </div>
-
-        <button class="chatbot-sdk-button" id="${id}-button" type="button">
-          <i class="fas fa-comments"></i>
-        </button>
-      `;
-
-      const overlay = document.createElement("div");
-      overlay.className = "chatbot-sdk-overlay";
-      overlay.id = `${id}-overlay`;
-
-      document.body.appendChild(overlay);
-      document.body.appendChild(container);
-
-      this.elements = {
-        container,
-        overlay,
-        button: document.getElementById(`${id}-button`),
-        widget: document.getElementById(`${id}-widget`),
-        messages: document.getElementById(`${id}-messages`),
-        welcome: document.getElementById(`${id}-welcome`),
-        input: document.getElementById(`${id}-input`),
-        send: document.getElementById(`${id}-send`),
-      };
-    }
-
-    _attachEventListeners() {
-      this.elements.button.addEventListener("click", () => this.toggle());
-      this.elements.overlay.addEventListener("click", () => this.close());
-      this.elements.send.addEventListener("click", () => this.sendMessage());
-      this.elements.input.addEventListener("keypress", (e) => {
-        if (e.key === "Enter" && !this.waitingForResponse) this.sendMessage();
-      });
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && this.isOpen) this.close();
-      });
-    }
-
-    _emit(event, data = {}) {
-      (this.eventHandlers[event] || []).forEach((cb) => cb(data));
+    sendCustomMessage(message) {
+      this.elements.input.value = message;
+      this.sendMessage();
     }
   }
 
-  // ─── Export ───────────────────────────────────────────────────────────────
-  if (typeof module !== "undefined" && module.exports) {
-    module.exports = ChatbotSDK;
-  } else {
-    global.ChatbotSDK = ChatbotSDK;
+  // Expose to window
+  window.AIChatWidget = AIChatWidget;
+
+  // Auto-initialize if config is present
+  if (window.aiChatWidgetConfig) {
+    window.aiChatWidgetInstance = new AIChatWidget(window.aiChatWidgetConfig);
   }
-})(typeof window !== "undefined" ? window : this);
+})(window);
