@@ -812,8 +812,10 @@
       }
 
       // Always display AI message first if present
-      if (reply.aiMessage) {
-        this.addMessage("bot", reply.aiMessage);
+      // Support both 'aiMessage' and 'message' field names
+      const messageText = reply.aiMessage || reply.message;
+      if (messageText) {
+        this.addMessage("bot", messageText);
       }
 
       // Handle different response types
@@ -840,7 +842,7 @@
           if (reply.data && reply.data.length > 0) {
             this.renderSlotOptions(reply.data);
           } else {
-            if (!reply.aiMessage) {
+            if (!messageText) {
               this.addMessage(
                 "bot",
                 "No available slots found for the selected dates.",
@@ -862,11 +864,13 @@
           break;
 
         case "error":
-          const errorMsg =
-            reply.aiMessage || reply.message || "Sorry, something went wrong.";
-          if (!reply.aiMessage) {
+          const errorMsg = messageText || "Sorry, something went wrong.";
+          if (!messageText) {
             this.addMessage("bot", `❌ ${errorMsg}`);
           }
+          break;
+
+        case "message":
           break;
       }
     }
