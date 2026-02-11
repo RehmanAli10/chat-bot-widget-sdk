@@ -133,7 +133,7 @@
 
         .ai-chat-widget {
           max-width: 400px;
-          height: 600px;
+          height: 500px;
           background: white;
           border-radius: var(--ai-radius);
           box-shadow: var(--ai-shadow);
@@ -153,6 +153,8 @@
           opacity: 1;
           visibility: visible;
           transform: translateY(0);
+          width: 300px;
+          
         }
 
         .ai-chat-header {
