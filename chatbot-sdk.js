@@ -7,7 +7,6 @@
 (function (window) {
   "use strict";
 
-  // Prevent multiple initializations
   if (window.AIChatWidget) {
     console.warn("AI Chat Widget already initialized");
     return;
@@ -17,7 +16,7 @@
     constructor(config = {}) {
       this.config = {
         apiUrl: config.apiUrl || "http://127.0.0.1:3000/api/chat",
-        position: config.position || "bottom-right", // bottom-right, bottom-left
+        position: config.position || "bottom-right",
         primaryColor: config.primaryColor || "#007aff",
         buttonSize: config.buttonSize || 64,
         zIndex: config.zIndex || 1000,
@@ -430,11 +429,13 @@
           cursor: pointer;
           transition: all 0.2s;
           font-family: inherit;
+          color: "#454545";
         }
 
         .ai-option-button:hover {
           background: #e5e5ea;
           border-color: var(--ai-primary);
+          color: "#454545";
         }
 
         .ai-option-button:active {
