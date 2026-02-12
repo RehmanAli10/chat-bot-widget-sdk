@@ -429,13 +429,13 @@
           cursor: pointer;
           transition: all 0.2s;
           font-family: inherit;
-          color: "#454545";
+          color: #454545;
         }
 
         .ai-option-button:hover {
           background: #e5e5ea;
           border-color: var(--ai-primary);
-          color: "#454545";
+          color: #454545;
         }
 
         .ai-option-button:active {
