@@ -406,7 +406,7 @@
 
         /* practitioner autocomplete */
         .aiw-pract-wrap { position:relative; }
-        .aiw-pract-wrap input { padding-right:36px; }
+        .aiw-pract-wrap input { padding-right:36px; width: 100%; }
         .aiw-pspinner {
           position:absolute; right:11px; top:50%; transform:translateY(-50%);
           width:16px; height:16px; display:none;
