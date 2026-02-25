@@ -260,8 +260,7 @@
           background:var(--aiw-pl); border-color:var(--aiw-p);
           transform:translateY(-1px);
           box-shadow:0 3px 10px rgba(0,120,212,.12);
-          color: var(--primary);
-        }
+          color: #0078d4;
 
         /* ── chat screen ── */
         .aiw-msgs {
