@@ -1,7 +1,17 @@
 /**
  * AI Chat Widget SDK
  * Embeddable chat widget for WordPress and other websites
- * Version: 1.0.0
+ * Version: 2.0.0
+ *
+ * WHAT'S NEW vs v1:
+ *  - Dual-mode: "Chat With Us" (general) vs "Schedule an Appointment" (booking)
+ *  - Conversational inline form: First Name → Last Name → Email → Practitioner
+ *  - Practitioner autocomplete with badge UI
+ *  - Slot card UI with "See all available slots" overlay
+ *  - `mode` field sent with every API request
+ *  - SID regenerated on every widget close/reset (prevents stale session context)
+ *  - Booking-intent detection upgrades general→booking mode mid-conversation
+ *  - Full state clear on appointment confirmed
  */
 
 (function (window) {
@@ -12,1120 +22,1601 @@
     return;
   }
 
+  // ── tiny UUID helper ────────────────────────────────────────────────────────
+  function generateUUID() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  // ── booking-intent keywords (used to auto-upgrade general→booking) ──────────
+  const BOOKING_INTENT_PATTERNS = [
+    /\bbook\b/i,
+    /\bschedul/i,
+    /\bappointment\b/i,
+    /\breserv/i,
+    /\bvisit\b/i,
+    /\bsee a doctor\b/i,
+    /\bcome in\b/i,
+    /\bsign me up\b/i,
+    /\bset up\b/i,
+    /\bi want to (book|schedule|make|get)\b/i,
+    /\bi'd like to (book|schedule|make|get)\b/i,
+    /\bcan i (book|schedule|make|get)\b/i,
+    /\bi need (an appointment|a slot|to book|to schedule)\b/i,
+  ];
+
+  function detectsBookingIntent(text) {
+    return BOOKING_INTENT_PATTERNS.some((re) => re.test(text));
+  }
+
+  // ── welcome message shown in general mode ───────────────────────────────────
+  const WELCOME_MSG =
+    "Welcome to One Chiropractic Studio! 🏥\n\n" +
+    "We're a network of chiropractic clinics across the Netherlands with locations in Utrecht, Amsterdam, Rotterdam, The Hague, Haarlem, Arnhem, Gouda, and Amersfoort.\n\n" +
+    "Our Services:\n" +
+    "• ONE Adjustment - Regular chiropractic adjustments\n" +
+    "• Initial Assessment - Comprehensive first visit evaluation\n\n" +
+    "Why Choose Us:\n" +
+    "✓ Experienced practitioners\n" +
+    "✓ Modern facilities\n" +
+    "✓ Convenient locations\n" +
+    "✓ Easy online booking\n\n" +
+    "Would you like to schedule an appointment, or do you have any questions?";
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // MAIN CLASS
+  // ════════════════════════════════════════════════════════════════════════════
   class AIChatWidget {
     constructor(config = {}) {
       this.config = {
         apiUrl: config.apiUrl || "http://127.0.0.1:3000/api/chat",
+        practitionerSearchUrl:
+          config.practitionerSearchUrl ||
+          "http://127.0.0.1:3000/api/practitioners/search",
         position: config.position || "bottom-right",
-        primaryColor: config.primaryColor || "#007aff",
-        buttonSize: config.buttonSize || 64,
+        primaryColor: config.primaryColor || "#0078d4",
         zIndex: config.zIndex || 1000,
-        greeting:
-          config.greeting ||
-          "Hello! 👋 I can help you book an appointment.\n\nTo get started, please provide your email.",
-        headerTitle: config.headerTitle || "AI Assistant",
-        headerSubtitle: config.headerSubtitle || "Online • Ready to chat",
-        autoOpen: config.autoOpen || false,
+        headerTitle: config.headerTitle || "One Chiropractic Studio",
+        headerSubtitle: config.headerSubtitle || "The team can also help",
         ...config,
       };
 
-      this.sessionId = this.generateUUID();
-      this.isTyping = false;
-      this.isChatOpen = false;
-      this.hasShownWelcome = false;
-      this.bookingState = {
+      // session / state
+      this.SID = generateUUID();
+      this.chatMode = "general"; // "general" | "booking"
+      this.bs = {
         patientId: null,
+        practitionerId: null,
         locationId: null,
         appointmentTypeId: null,
         selectedSlot: null,
       };
-      this.currentOptions = null;
-      this.waitingForResponse = false;
+      this.busy = false;
+      this.curOpts = null;
+      this.isOpen = false;
+      this.curScreen = "welcome"; // "welcome" | "chat"
+
+      // practitioner autocomplete state
+      this.selectedPract = null;
+      this.practDebounce = null;
+      this.practHighlight = -1;
 
       this.init();
     }
 
-    generateUUID() {
-      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
-        /[xy]/g,
-        function (c) {
-          const r = (Math.random() * 16) | 0;
-          const v = c === "x" ? r : (r & 0x3) | 0x8;
-          return v.toString(16);
-        },
-      );
-    }
-
+    // ── INIT ──────────────────────────────────────────────────────────────────
     init() {
       this.injectStyles();
-      this.createWidget();
-      this.attachEventListeners();
-
-      if (this.config.autoOpen) {
-        setTimeout(() => this.openChat(), 500);
-      }
+      this.buildDOM();
+      this.attachListeners();
+      if (this.config.autoOpen) setTimeout(() => this.openWidget(), 500);
     }
 
+    // ── STYLES ────────────────────────────────────────────────────────────────
     injectStyles() {
-      const styleId = "ai-chat-widget-styles";
-      if (document.getElementById(styleId)) return;
+      const id = "ai-chat-widget-styles-v2";
+      if (document.getElementById(id)) return;
+
+      const p = this.config.primaryColor;
+      const pd = this._darken(p, 20);
+      const pl = this._lighten(p);
 
       const style = document.createElement("style");
-      style.id = styleId;
+      style.id = id;
       style.textContent = `
-        .ai-chat-widget-container {
-          --ai-primary: ${this.config.primaryColor};
-          --ai-primary-dark: ${this.adjustColor(this.config.primaryColor, -20)};
-          --ai-bot-bg: #f2f2f7;
-          --ai-user-bg: ${this.config.primaryColor};
-          --ai-text-dark: #1d1d1f;
-          --ai-text-light: #86868b;
-          --ai-border: #e5e5ea;
-          --ai-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
-          --ai-radius: 16px;
-          --ai-widget-size: ${this.config.buttonSize}px;
-          
+        /* ── container ── */
+        .aiw-root {
+          --aiw-p:  ${p};
+          --aiw-pd: ${pd};
+          --aiw-pl: ${pl};
+          --aiw-text: #1a1a1a;
+          --aiw-light: #888;
+          --aiw-border: #e8e8e8;
+          --aiw-success: #22c55e;
+          --aiw-success-bg: #f0fdf4;
           position: fixed;
-          ${this.getPositionStyles()}
+          ${this._posCSS()}
           z-index: ${this.config.zIndex};
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
+        .aiw-root * { margin:0; padding:0; box-sizing:border-box; }
 
-        .ai-chat-widget-container * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
-        }
-
-        .ai-chat-button {
-          width: var(--ai-widget-size);
-          height: var(--ai-widget-size);
-          border-radius: 50%;
-          background: var(--ai-primary);
-          color: white;
-          border: none;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 24px;
-          box-shadow: 0 6px 20px rgba(0, 122, 255, 0.3);
-          transition: all 0.3s ease;
+        /* ── launcher button ── */
+        .aiw-launcher {
           position: relative;
+          width: 56px; height: 56px;
+          border-radius: 50%;
+          background: var(--aiw-p);
+          color: white; border: none; cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 22px;
+          box-shadow: 0 4px 16px rgba(0,120,212,.35);
+          transition: all .25s ease;
           z-index: ${this.config.zIndex + 1};
         }
+        .aiw-launcher:hover { background: var(--aiw-pd); transform: translateY(-2px); }
+        .aiw-launcher.open  { background: #555; }
 
-        .ai-chat-button:hover {
-          background: var(--ai-primary-dark);
-          transform: scale(1.05);
-          box-shadow: 0 8px 25px rgba(0, 122, 255, 0.4);
-        }
-
-        .ai-chat-button.active {
-          transform: rotate(90deg);
-          background: #ff3b30;
-        }
-
-        .ai-chat-button.active:hover {
-          background: #d70015;
-        }
-
-        .ai-chat-widget {
-          max-width: 400px;
-          height: 500px;
-          background: white;
-          border-radius: var(--ai-radius);
-          box-shadow: var(--ai-shadow);
-          overflow: hidden;
-          display: flex;
-          flex-direction: column;
+        /* ── widget panel ── */
+        .aiw-panel {
           position: absolute;
-          bottom: calc(var(--ai-widget-size) + 20px);
-          ${this.config.position.includes("right") ? "right: 0;" : "left: 0;"}
-          opacity: 0;
-          visibility: hidden;
-          transform: translateY(20px);
-          transition: all 0.3s ease;
-        }
-
-        .ai-chat-widget.active {
-          opacity: 1;
-          visibility: visible;
-          transform: translateY(0);
-          width: 300px;
-          
-        }
-
-        .ai-chat-header {
-          padding: 16px 20px;
+          ${this.config.position.includes("right") ? "right:0;" : "left:0;"}
+          bottom: calc(56px + 16px);
+          width: 390px; height: 580px;
           background: white;
-          border-bottom: 1px solid var(--ai-border);
-          display: flex;
-          align-items: center;
-          gap: 12px;
+          border-radius: 16px;
+          box-shadow: 0 8px 32px rgba(0,0,0,.14);
+          display: flex; flex-direction: column;
+          overflow: hidden;
+          opacity: 0; visibility: hidden;
+          transform: translateY(16px) scale(.97);
+          transition: all .3s cubic-bezier(.4,0,.2,1);
+        }
+        .aiw-panel.active {
+          opacity: 1; visibility: visible;
+          transform: translateY(0) scale(1);
         }
 
-        .ai-header-icon {
-          width: 36px;
-          height: 36px;
-          background: var(--ai-primary);
-          border-radius: 10px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: white;
-          font-size: 18px;
+        /* ── header ── */
+        .aiw-header {
+          display: flex; align-items: center; gap: 10px;
+          padding: 13px 14px;
+          border-bottom: 1px solid var(--aiw-border);
+          background: white; flex-shrink: 0;
+        }
+        .aiw-hbtn {
+          width:30px; height:30px; border-radius:50%; border:none;
+          cursor:pointer; display:flex; align-items:center; justify-content:center;
+          background:transparent; color:#888; font-size:13px; transition:background .2s;
+          flex-shrink:0;
+        }
+        .aiw-hbtn:hover { background:#f2f2f2; color:#333; }
+        .aiw-hlogo {
+          width:36px; height:36px; border-radius:10px;
+          background: linear-gradient(135deg,#4fc3f7,var(--aiw-p));
+          display:flex; align-items:center; justify-content:center;
+          color:white; font-size:17px; flex-shrink:0;
+          box-shadow: 0 2px 8px rgba(0,120,212,.2);
+        }
+        .aiw-htitle { flex:1; }
+        .aiw-htitle strong { display:block; font-size:14.5px; font-weight:600; color:var(--aiw-text); }
+        .aiw-htitle span   { font-size:11px; color:#aaa; }
+
+        /* ── screens ── */
+        .aiw-screen { flex:1; display:none; flex-direction:column; overflow:hidden; }
+        .aiw-screen.active { display:flex; }
+
+        /* ── welcome screen ── */
+        .aiw-welcome-body {
+          flex:1; padding:28px 22px 16px; overflow-y:auto;
+        }
+        .aiw-how { text-align:center; font-size:13px; color:var(--aiw-light); margin-bottom:22px; }
+        .aiw-greet-row {
+          display:flex; align-items:flex-start; gap:10px;
+          animation: aiw-fadeUp .4s ease both;
+        }
+        .aiw-g-av {
+          width:36px; height:36px; border-radius:50%;
+          background:linear-gradient(135deg,#4fc3f7,var(--aiw-p));
+          display:flex; align-items:center; justify-content:center;
+          color:white; font-size:15px; flex-shrink:0; margin-top:2px;
+        }
+        .aiw-g-bubble {
+          background:#f2f2f2; border-radius:18px 18px 18px 4px;
+          padding:12px 15px; font-size:14px; color:var(--aiw-text);
+          line-height:1.5; max-width:255px;
+        }
+        .aiw-g-meta { font-size:11px; color:var(--aiw-light); margin-top:5px; }
+        .aiw-welcome-actions {
+          flex-shrink:0; padding:14px 22px 22px;
+          display:flex; gap:10px; justify-content:center;
+          border-top:1px solid var(--aiw-border);
+        }
+        .aiw-pill {
+          padding:10px 20px; border-radius:999px;
+          border:1.5px solid var(--aiw-border);
+          background:white; color:var(--aiw-p);
+          font-size:13.5px; font-weight:500; cursor:pointer;
+          transition:all .2s; white-space:nowrap; font-family:inherit;
+        }
+        .aiw-pill:hover {
+          background:var(--aiw-pl); border-color:var(--aiw-p);
+          transform:translateY(-1px);
+          box-shadow:0 3px 10px rgba(0,120,212,.12);
         }
 
-        .ai-header-info h2 {
-          font-size: 17px;
-          font-weight: 600;
-          color: var(--ai-text-dark);
+        /* ── chat screen ── */
+        .aiw-msgs {
+          flex:1; overflow-y:auto; padding:18px;
+          background:#f9f9f9;
+          display:flex; flex-direction:column; gap:12px;
+        }
+        .aiw-msgs::-webkit-scrollbar { width:5px; }
+        .aiw-msgs::-webkit-scrollbar-thumb { background:#ddd; border-radius:3px; }
+
+        /* messages */
+        .aiw-msg { display:flex; gap:8px; animation:aiw-fadeUp .25s ease both; }
+        .aiw-msg.bot  { align-items:flex-start; }
+        .aiw-msg.user { align-items:flex-end; flex-direction:row-reverse; }
+        .aiw-av {
+          width:30px; height:30px; border-radius:50%;
+          display:flex; align-items:center; justify-content:center;
+          font-size:13px; flex-shrink:0;
+        }
+        .aiw-msg.bot  .aiw-av { background:linear-gradient(135deg,#4fc3f7,var(--aiw-p)); color:white; }
+        .aiw-msg.user .aiw-av { background:var(--aiw-p); color:white; }
+        .aiw-mbody { max-width:72%; }
+        .aiw-bubble {
+          padding:10px 14px; border-radius:14px;
+          font-size:13.5px; line-height:1.5; word-wrap:break-word;
+        }
+        .aiw-msg.bot  .aiw-bubble { background:white; color:var(--aiw-text); border:1px solid var(--aiw-border); border-bottom-left-radius:4px; }
+        .aiw-msg.user .aiw-bubble { background:var(--aiw-p); color:white; border-bottom-right-radius:4px; }
+        .aiw-mtime { font-size:10.5px; color:var(--aiw-light); margin-top:4px; padding:0 2px; }
+
+        /* typing */
+        .aiw-typing-row { display:flex; gap:4px; align-items:center; padding:12px 14px; }
+        .aiw-dot {
+          width:6px; height:6px; border-radius:50%;
+          background:#aaa; animation:aiw-blink 1.4s infinite ease-in-out;
+        }
+        .aiw-dot:nth-child(1){ animation-delay:-.32s; }
+        .aiw-dot:nth-child(2){ animation-delay:-.16s; }
+
+        /* option buttons */
+        .aiw-opts { display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; }
+        .aiw-opt {
+          padding:11px 24px; background:var(--aiw-p);
+          border:none; border-radius:999px;
+          font-size:14px; font-weight:500; cursor:pointer;
+          transition:all .2s; font-family:inherit; color:white;
+          box-shadow:0 2px 6px rgba(0,120,212,.3);
+        }
+        .aiw-opt:hover {
+          background:var(--aiw-pd); transform:translateY(-2px);
+          box-shadow:0 4px 12px rgba(0,120,212,.4);
         }
 
-        .ai-header-info p {
-          font-size: 13px;
-          color: var(--ai-text-light);
-          margin-top: 2px;
+        /* no-slots notice */
+        .aiw-no-slots {
+          background:#fff8e1; border:1px solid #ffd54f;
+          border-radius:8px; padding:10px 14px;
+          font-size:13px; color:#7a5c00;
         }
 
-        .ai-status-dot {
-          width: 8px;
-          height: 8px;
-          background: #30d158;
-          border-radius: 50%;
-          margin-right: 6px;
-          display: inline-block;
-          animation: ai-pulse 2s infinite;
+        /* chat bar */
+        .aiw-bar {
+          padding:13px 15px; border-top:1px solid var(--aiw-border);
+          background:white; display:flex; gap:10px;
+          align-items:center; flex-shrink:0;
+        }
+        .aiw-inp {
+          flex:1; padding:10px 15px;
+          border:1.5px solid var(--aiw-border); border-radius:999px;
+          font-size:13.5px; outline:none; transition:border-color .2s;
+          background:#fafafa; font-family:inherit; color:var(--aiw-text);
+        }
+        .aiw-inp:focus { border-color:var(--aiw-p); background:white; }
+        .aiw-inp:disabled { opacity:.5; cursor:not-allowed; }
+        .aiw-send {
+          width:38px; height:38px; border-radius:50%;
+          background:var(--aiw-p); color:white; border:none;
+          cursor:pointer; display:flex; align-items:center;
+          justify-content:center; font-size:14px; flex-shrink:0;
+          transition:all .2s;
+        }
+        .aiw-send:hover { background:var(--aiw-pd); transform:scale(1.05); }
+        .aiw-send:disabled { background:#ccc; cursor:not-allowed; transform:none; }
+
+        /* inline field cards */
+        .aiw-field-card {
+          display:flex; flex-direction:column; gap:10px;
+          margin:8px 0; padding:16px; background:white;
+          border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.08);
+          animation:aiw-fadeUp .3s ease both; transition:box-shadow .3s;
+        }
+        .aiw-field-label { font-size:13px; font-weight:500; color:#666; }
+        .aiw-field-row { display:flex; gap:8px; position:relative; }
+        .aiw-field-inp {
+          flex:1; padding:12px 14px;
+          border:1.5px solid var(--aiw-border); border-radius:8px;
+          font-size:14px; outline:none; font-family:inherit;
+          background:white; color:var(--aiw-text); transition:all .2s;
+        }
+        .aiw-field-inp:focus { border-color:var(--aiw-p); box-shadow:0 0 0 3px rgba(0,120,212,.1); }
+        .aiw-field-inp.success { border-color:var(--aiw-success)!important; background:var(--aiw-success-bg)!important; }
+        .aiw-field-err { font-size:12px; color:#e74c3c; margin-top:4px; display:none; }
+
+        /* submit button inside field card */
+        .aiw-sbtn {
+          width:40px; height:40px; background:var(--aiw-p);
+          color:white; border:none; border-radius:8px;
+          cursor:pointer; display:flex; align-items:center;
+          justify-content:center; transition:all .2s;
+          flex-shrink:0; position:relative; overflow:hidden;
+        }
+        .aiw-sbtn:hover:not(:disabled) { background:var(--aiw-pd); }
+        .aiw-sbtn:disabled { cursor:not-allowed; }
+        .aiw-sbtn .s-spinner {
+          width:18px; height:18px;
+          border:2px solid rgba(255,255,255,.35); border-top-color:white;
+          border-radius:50%; animation:aiw-spin .65s linear infinite;
+          display:none; position:absolute;
+        }
+        .aiw-sbtn .s-icon  { transition:opacity .15s,transform .15s; }
+        .aiw-sbtn .s-tick  {
+          display:none; position:absolute; font-size:17px;
+          transform:scale(0);
+          transition:transform .25s cubic-bezier(.34,1.56,.64,1);
+        }
+        .aiw-sbtn.loading .s-icon  { opacity:0; transform:scale(.5); }
+        .aiw-sbtn.loading .s-spinner { display:block; }
+        .aiw-sbtn.success { background:var(--aiw-success)!important; }
+        .aiw-sbtn.success .s-icon  { opacity:0; transform:scale(.5); }
+        .aiw-sbtn.success .s-spinner { display:none; }
+        .aiw-sbtn.success .s-tick  { display:flex; transform:scale(1); }
+
+        /* continue button inside practitioner step */
+        .aiw-continue-btn {
+          padding:12px 20px; background:var(--aiw-p); color:white;
+          border:none; border-radius:8px; font-size:14px; font-weight:500;
+          cursor:pointer; font-family:inherit;
+          display:flex; align-items:center; justify-content:center; gap:8px;
+          transition:all .2s;
+        }
+        .aiw-continue-btn:hover { background:var(--aiw-pd); transform:translateY(-1px); }
+
+        /* practitioner autocomplete */
+        .aiw-pract-wrap { position:relative; }
+        .aiw-pract-wrap input { padding-right:36px; }
+        .aiw-pspinner {
+          position:absolute; right:11px; top:50%; transform:translateY(-50%);
+          width:16px; height:16px; display:none;
+          border:2px solid #ddd; border-top-color:var(--aiw-p);
+          border-radius:50%; animation:aiw-spin .7s linear infinite;
+        }
+        .aiw-pspinner.show { display:block; }
+        .aiw-pclear {
+          position:absolute; right:11px; top:50%; transform:translateY(-50%);
+          width:20px; height:20px; border-radius:50%;
+          background:#ddd; border:none; cursor:pointer;
+          display:none; align-items:center; justify-content:center;
+          color:#666; font-size:11px; transition:background .2s;
+        }
+        .aiw-pclear:hover { background:#bbb; }
+        .aiw-pclear.show { display:flex; }
+        .aiw-pdropdown {
+          position:absolute; top:calc(100% + 4px); left:0; right:0;
+          background:white; border:1.5px solid var(--aiw-border);
+          border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.1);
+          z-index:999; max-height:180px; overflow-y:auto; display:none;
+        }
+        .aiw-pdropdown.open { display:block; animation:aiw-fadeUp .15s ease both; }
+        .aiw-pitem {
+          padding:10px 14px; font-size:13.5px; color:var(--aiw-text);
+          cursor:pointer; transition:background .15s;
+          display:flex; align-items:center; gap:8px;
+        }
+        .aiw-pitem:hover, .aiw-pitem.active { background:var(--aiw-pl); color:var(--aiw-p); }
+        .aiw-pempty { padding:12px 14px; font-size:13px; color:var(--aiw-light); text-align:center; font-style:italic; }
+        .aiw-pbadge {
+          display:none; align-items:center; gap:6px;
+          padding:7px 10px; background:var(--aiw-pl);
+          border:1.5px solid var(--aiw-p); border-radius:8px;
+          font-size:13px; color:var(--aiw-p); font-weight:500; margin-top:6px;
+        }
+        .aiw-pbadge.show { display:flex; }
+        .aiw-pbadge-x {
+          margin-left:auto; background:none; border:none;
+          cursor:pointer; color:var(--aiw-p); font-size:13px; padding:0 2px;
         }
 
-        @keyframes ai-pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
+        /* slot card */
+        .aiw-slot-card {
+          background:white; border:1.5px solid var(--aiw-border);
+          border-radius:14px; margin-top:8px;
+          box-shadow:0 2px 12px rgba(0,0,0,.07); width:100%;
+        }
+        .aiw-slot-head {
+          padding:12px 16px; border-bottom:1px solid var(--aiw-border);
+        }
+        .aiw-slot-title { font-size:13px; font-weight:600; color:var(--aiw-text); }
+        .aiw-slot-sub   { font-size:11px; color:#888; margin-top:2px; }
+        .aiw-slot-list  { padding:10px 16px; display:flex; flex-direction:column; gap:8px; }
+        .aiw-slot-btn {
+          width:100%; padding:11px 16px;
+          border:1.5px solid var(--aiw-border); border-radius:8px;
+          background:white; font-size:14px; color:var(--aiw-text);
+          font-family:inherit; cursor:pointer; text-align:center;
+          transition:all .15s;
+        }
+        .aiw-slot-btn:hover { border-color:var(--aiw-p); color:var(--aiw-p); background:var(--aiw-pl); }
+        .aiw-slot-more {
+          width:100%; padding:11px 16px; border:none;
+          border-top:1px solid var(--aiw-border); background:#f9f9f9;
+          color:var(--aiw-p); font-size:13px; font-weight:500;
+          cursor:pointer; font-family:inherit;
+          display:flex; align-items:center; justify-content:center; gap:6px;
+          border-radius:0 0 12px 12px;
+        }
+        .aiw-slot-more:hover { background:var(--aiw-pl); }
+
+        /* slots overlay */
+        .aiw-ov {
+          position:absolute; inset:0; background:white;
+          z-index:200; display:flex; flex-direction:column;
+          animation:aiw-fadeUp .2s ease both;
+        }
+        .aiw-ov-head {
+          display:flex; align-items:center; gap:10px;
+          padding:13px 14px; border-bottom:1px solid var(--aiw-border); flex-shrink:0;
+        }
+        .aiw-ov-back {
+          width:30px; height:30px; border-radius:50%; border:none;
+          background:transparent; color:#888; cursor:pointer;
+          display:flex; align-items:center; justify-content:center; font-size:13px;
+        }
+        .aiw-ov-back:hover { background:#f2f2f2; }
+        .aiw-ov-body { flex:1; overflow-y:auto; padding:16px; }
+        .aiw-ov-body::-webkit-scrollbar { width:4px; }
+        .aiw-ov-body::-webkit-scrollbar-thumb { background:#ddd; border-radius:2px; }
+
+        /* keyframes */
+        @keyframes aiw-fadeUp {
+          from { opacity:0; transform:translateY(8px); }
+          to   { opacity:1; transform:translateY(0); }
+        }
+        @keyframes aiw-blink {
+          0%,80%,100% { transform:scale(.8); opacity:.5; }
+          40%          { transform:scale(1);   opacity:1;  }
+        }
+        @keyframes aiw-spin {
+          to { transform:translateY(-50%) rotate(360deg); }
+        }
+        @keyframes aiw-tick {
+          0%  { transform:scale(0) rotate(-10deg); }
+          60% { transform:scale(1.2) rotate(3deg); }
+          100%{ transform:scale(1)   rotate(0deg); }
         }
 
-        .ai-messages-container {
-          flex: 1;
-          overflow-y: auto;
-          padding: 20px;
-          background: #fafafa;
+        /* overlay backdrop */
+        .aiw-backdrop {
+          position:fixed; inset:0;
+          background:rgba(0,0,0,.25); backdrop-filter:blur(2px);
+          z-index:${this.config.zIndex - 1}; display:none;
         }
+        .aiw-backdrop.active { display:block; }
 
-        .ai-message {
-          display: flex;
-          gap: 8px;
-          margin-bottom: 16px;
-          animation: ai-fadeIn 0.3s ease;
-        }
-
-        @keyframes ai-fadeIn {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
+        /* responsive */
+        @media(max-width:480px){
+          .aiw-panel {
+            width:calc(100vw - 32px); height:calc(100vh - 120px);
+            ${this.config.position.includes("right") ? "right:0;" : "left:0;"}
           }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        .ai-message.bot {
-          align-items: flex-start;
-        }
-
-        .ai-message.user {
-          align-items: flex-end;
-          flex-direction: row-reverse;
-        }
-
-        .ai-message-avatar {
-          width: 32px;
-          height: 32px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-          font-size: 14px;
-        }
-
-        .ai-message.bot .ai-message-avatar {
-          background: var(--ai-bot-bg);
-          color: var(--ai-primary);
-        }
-
-        .ai-message.user .ai-message-avatar {
-          background: var(--ai-user-bg);
-          color: white;
-        }
-
-        .ai-message-content {
-          max-width: 70%;
-        }
-
-        .ai-message-bubble {
-          padding: 12px 16px;
-          border-radius: 18px;
-          line-height: 1.4;
-          font-size: 15px;
-          word-wrap: break-word;
-        }
-
-        .ai-message.bot .ai-message-bubble {
-          background: white;
-          color: var(--ai-text-dark);
-          border: 1px solid var(--ai-border);
-          border-bottom-left-radius: 4px;
-        }
-
-        .ai-message.user .ai-message-bubble {
-          background: var(--ai-user-bg);
-          color: white;
-          border-bottom-right-radius: 4px;
-        }
-
-        .ai-message-time {
-          font-size: 11px;
-          color: var(--ai-text-light);
-          margin-top: 4px;
-          text-align: right;
-        }
-
-        .ai-message.user .ai-message-time {
-          color: rgba(255, 255, 255, 0.7);
-        }
-
-        .ai-typing-indicator {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          padding: 12px;
-        }
-
-        .ai-typing-dot {
-          width: 6px;
-          height: 6px;
-          background: var(--ai-text-light);
-          border-radius: 50%;
-          animation: ai-typing 1.4s infinite ease-in-out;
-        }
-
-        .ai-typing-dot:nth-child(1) { animation-delay: -0.32s; }
-        .ai-typing-dot:nth-child(2) { animation-delay: -0.16s; }
-
-        @keyframes ai-typing {
-          0%, 80%, 100% {
-            transform: scale(0.8);
-            opacity: 0.5;
-          }
-          40% {
-            transform: scale(1);
-            opacity: 1;
-          }
-        }
-
-        .ai-input-container {
-          padding: 16px 20px;
-          background: white;
-          border-top: 1px solid var(--ai-border);
-        }
-
-        .ai-input-wrapper {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-        }
-
-        .ai-message-input {
-          flex: 1;
-          padding: 12px 16px;
-          border: 1px solid var(--ai-border);
-          border-radius: 20px;
-          font-size: 15px;
-          outline: none;
-          transition: all 0.2s;
-          background: #f2f2f7;
-          font-family: inherit;
-        }
-
-        .ai-message-input:focus {
-          background: white;
-          border-color: var(--ai-primary);
-        }
-
-        .ai-message-input:disabled {
-          background: #e5e5ea;
-          cursor: not-allowed;
-          opacity: 0.6;
-        }
-
-        .ai-send-button {
-          width: 44px;
-          height: 44px;
-          border-radius: 50%;
-          background: var(--ai-primary);
-          color: white;
-          border: none;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          transition: all 0.2s;
-          flex-shrink: 0;
-        }
-
-        .ai-send-button:hover {
-          background: var(--ai-primary-dark);
-          transform: scale(1.05);
-        }
-
-        .ai-send-button:disabled {
-          background: var(--ai-text-light);
-          cursor: not-allowed;
-          transform: none;
-        }
-
-        .ai-welcome-message {
-          text-align: center;
-          padding: 40px 20px;
-          color: var(--ai-text-light);
-        }
-
-        .ai-welcome-icon {
-          font-size: 48px;
-          color: var(--ai-primary);
-          margin-bottom: 16px;
-          opacity: 0.5;
-        }
-
-        .ai-messages-container::-webkit-scrollbar {
-          width: 6px;
-        }
-
-        .ai-messages-container::-webkit-scrollbar-track {
-          background: transparent;
-        }
-
-        .ai-messages-container::-webkit-scrollbar-thumb {
-          background: #c7c7cc;
-          border-radius: 3px;
-        }
-
-        .ai-options-container {
-          margin: 12px 0;
-          padding: 0 8px;
-        }
-
-        .ai-option-button {
-          display: block;
-          width: 100%;
-          padding: 12px 16px;
-          margin: 8px 0;
-          background: #f2f2f7;
-          border: 1px solid #e5e5ea;
-          border-radius: 10px;
-          text-align: left;
-          font-size: 15px;
-          cursor: pointer;
-          transition: all 0.2s;
-          font-family: inherit;
-          color: #454545;
-        }
-
-        .ai-option-button:hover {
-          background: #e5e5ea;
-          border-color: var(--ai-primary);
-          color: #454545;
-        }
-
-        .ai-option-button:active {
-          background: #d0d0d7;
-          transform: scale(0.98);
-        }
-
-        .ai-option-button:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .ai-info-message {
-          background: #fff3cd;
-          border: 1px solid #ffc107;
-          border-radius: 10px;
-          padding: 12px 16px;
-          margin: 12px 0;
-          font-size: 14px;
-          color: #856404;
-        }
-
-        .ai-chat-overlay {
-          position: fixed;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          background: transparent;
-          z-index: ${this.config.zIndex - 1};
-          display: none;
-        }
-
-        .ai-chat-overlay.active {
-          display: block;
-        }
-
-        @media (max-width: 480px) {
-          .ai-chat-widget {
-            width: calc(100vw - 40px);
-            height: 70vh;
-            max-width: 100%;
-            border-radius: var(--ai-radius);
-            bottom: calc(var(--ai-widget-size) + 20px);
-            ${this.config.position.includes("right") ? "right: 20px;" : "left: 20px;"}
-          }
-
-          .ai-chat-widget-container {
-            ${this.config.position.includes("bottom") ? "bottom: 20px;" : "top: 20px;"}
-            ${this.config.position.includes("right") ? "right: 20px;" : "left: 20px;"}
-          }
-
-          .ai-message-content {
-            max-width: 80%;
-          }
-        }
-
-        /* Font Awesome Icons (minimal SVG icons) */
-        .ai-icon {
-          display: inline-block;
-          width: 1em;
-          height: 1em;
-          vertical-align: -0.125em;
         }
       `;
-
       document.head.appendChild(style);
     }
 
-    getPositionStyles() {
-      const positions = {
-        "bottom-right": "bottom: 30px; right: 30px;",
-        "bottom-left": "bottom: 30px; left: 30px;",
-        "top-right": "top: 30px; right: 30px;",
-        "top-left": "top: 30px; left: 30px;",
-      };
-      return positions[this.config.position] || positions["bottom-right"];
-    }
+    // ── DOM BUILD ─────────────────────────────────────────────────────────────
+    buildDOM() {
+      // backdrop
+      this.backdrop = document.createElement("div");
+      this.backdrop.className = "aiw-backdrop";
+      document.body.appendChild(this.backdrop);
 
-    adjustColor(color, percent) {
-      const num = parseInt(color.replace("#", ""), 16);
-      const amt = Math.round(2.55 * percent);
-      const R = (num >> 16) + amt;
-      const G = ((num >> 8) & 0x00ff) + amt;
-      const B = (num & 0x0000ff) + amt;
-      return (
-        "#" +
-        (
-          0x1000000 +
-          (R < 255 ? (R < 1 ? 0 : R) : 255) * 0x10000 +
-          (G < 255 ? (G < 1 ? 0 : G) : 255) * 0x100 +
-          (B < 255 ? (B < 1 ? 0 : B) : 255)
-        )
-          .toString(16)
-          .slice(1)
-      );
-    }
-
-    createWidget() {
-      // Create container
-      this.container = document.createElement("div");
-      this.container.className = "ai-chat-widget-container";
-      this.container.innerHTML = `
-        <div class="ai-chat-widget">
-          <div class="ai-chat-header">
-            <div class="ai-header-icon">
-              ${this.getIcon("robot")}
-            </div>
-            <div class="ai-header-info">
-              <h2>${this.config.headerTitle}</h2>
-              <p><span class="ai-status-dot"></span> ${this.config.headerSubtitle}</p>
-            </div>
-          </div>
-
-          <div class="ai-messages-container">
-            <div class="ai-welcome-message">
-              <div class="ai-welcome-icon">
-                ${this.getIcon("comments")}
-              </div>
-              <h3>Start a conversation</h3>
-              <p>I'm here to help you with anything you need!</p>
-            </div>
-          </div>
-
-          <div class="ai-input-container">
-            <div class="ai-input-wrapper">
-              <input
-                type="text"
-                class="ai-message-input"
-                placeholder="Type your message..."
-                autocomplete="off"
-              />
-              <button class="ai-send-button">
-                ${this.getIcon("send")}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <button class="ai-chat-button">
-          ${this.getIcon("comments")}
+      // root container
+      this.root = document.createElement("div");
+      this.root.className = "aiw-root";
+      this.root.innerHTML = `
+        <!-- launcher -->
+        <button class="aiw-launcher" id="aiwLauncher" aria-label="Open chat">
+          <i class="fas fa-comment-dots"></i>
         </button>
+
+        <!-- panel -->
+        <div class="aiw-panel" id="aiwPanel">
+
+          <!-- header -->
+          <div class="aiw-header">
+            <button class="aiw-hbtn" id="aiwBack" style="display:none">
+              <i class="fas fa-chevron-left"></i>
+            </button>
+            <div class="aiw-hlogo"><i class="fas fa-hand-holding-medical"></i></div>
+            <div class="aiw-htitle">
+              <strong>${this.config.headerTitle}</strong>
+              <span>${this.config.headerSubtitle}</span>
+            </div>
+            <button class="aiw-hbtn" id="aiwClose"><i class="fas fa-times"></i></button>
+          </div>
+
+          <!-- welcome screen -->
+          <div class="aiw-screen active" id="aiwWelcome">
+            <div class="aiw-welcome-body">
+              <div class="aiw-how">How can we help?</div>
+              <div class="aiw-greet-row">
+                <div class="aiw-g-av"><i class="fas fa-robot"></i></div>
+                <div>
+                  <div class="aiw-g-bubble">Hello 👋 How can we help you today?</div>
+                  <div class="aiw-g-meta">AI Agent &bull; Just now</div>
+                </div>
+              </div>
+            </div>
+            <div class="aiw-welcome-actions">
+              <button class="aiw-pill" id="aiwBtnChat">Chat With Us</button>
+              <button class="aiw-pill" id="aiwBtnSchedule">Schedule an Appointment</button>
+            </div>
+          </div>
+
+          <!-- chat screen -->
+          <div class="aiw-screen" id="aiwChat">
+            <div class="aiw-msgs" id="aiwMsgs"></div>
+            <div class="aiw-bar" id="aiwBar">
+              <input class="aiw-inp" id="aiwInp" placeholder="Type your message…" autocomplete="off" />
+              <button class="aiw-send" id="aiwSend"><i class="fas fa-paper-plane"></i></button>
+            </div>
+          </div>
+
+        </div>
       `;
+      document.body.appendChild(this.root);
 
-      // Create overlay
-      this.overlay = document.createElement("div");
-      this.overlay.className = "ai-chat-overlay";
-
-      document.body.appendChild(this.overlay);
-      document.body.appendChild(this.container);
-
-      // Cache DOM elements
-      this.elements = {
-        button: this.container.querySelector(".ai-chat-button"),
-        widget: this.container.querySelector(".ai-chat-widget"),
-        messagesContainer: this.container.querySelector(
-          ".ai-messages-container",
-        ),
-        welcomeMessage: this.container.querySelector(".ai-welcome-message"),
-        input: this.container.querySelector(".ai-message-input"),
-        sendButton: this.container.querySelector(".ai-send-button"),
+      // cache elements
+      this.el = {
+        launcher: this.root.querySelector("#aiwLauncher"),
+        panel: this.root.querySelector("#aiwPanel"),
+        back: this.root.querySelector("#aiwBack"),
+        close: this.root.querySelector("#aiwClose"),
+        welcome: this.root.querySelector("#aiwWelcome"),
+        chat: this.root.querySelector("#aiwChat"),
+        msgs: this.root.querySelector("#aiwMsgs"),
+        bar: this.root.querySelector("#aiwBar"),
+        inp: this.root.querySelector("#aiwInp"),
+        send: this.root.querySelector("#aiwSend"),
+        btnChat: this.root.querySelector("#aiwBtnChat"),
+        btnSched: this.root.querySelector("#aiwBtnSchedule"),
       };
     }
 
-    getIcon(name) {
-      const icons = {
-        robot:
-          '<svg viewBox="0 0 640 512" fill="currentColor" style="width:1em;height:1em"><path d="M320 0c17.7 0 32 14.3 32 32V96H472c39.8 0 72 32.2 72 72V440c0 39.8-32.2 72-72 72H168c-39.8 0-72-32.2-72-72V168c0-39.8 32.2-72 72-72H288V32c0-17.7 14.3-32 32-32zM208 384c-8.8 0-16 7.2-16 16s7.2 16 16 16h32c8.8 0 16-7.2 16-16s-7.2-16-16-16H208zm96 0c-8.8 0-16 7.2-16 16s7.2 16 16 16h32c8.8 0 16-7.2 16-16s-7.2-16-16-16H304zm96 0c-8.8 0-16 7.2-16 16s7.2 16 16 16h32c8.8 0 16-7.2 16-16s-7.2-16-16-16H400zM264 256a40 40 0 1 0 -80 0 40 40 0 1 0 80 0zm152 40a40 40 0 1 0 0-80 40 40 0 1 0 0 80z"/></svg>',
-        comments:
-          '<svg viewBox="0 0 640 512" fill="currentColor" style="width:1em;height:1em"><path d="M208 352c114.9 0 208-78.8 208-176S322.9 0 208 0S0 78.8 0 176c0 38.6 14.7 74.3 39.6 103.4c-3.5 9.4-8.7 17.7-14.2 24.7c-4.8 6.2-9.7 11-13.3 14.3c-1.8 1.6-3.3 2.9-4.3 3.7c-.5 .4-.9 .7-1.1 .8l-.2 .2 0 0 0 0C1 327.2-1.4 334.4 .8 340.9S9.1 352 16 352c21.8 0 43.8-5.6 62.1-12.5c9.2-3.5 17.8-7.4 25.3-11.4C134.1 343.3 169.8 352 208 352zM448 176c0 112.3-99.1 196.9-216.5 207C255.8 457.4 336.4 512 432 512c38.2 0 73.9-8.7 104.7-23.9c7.5 4 16 7.9 25.2 11.4c18.3 6.9 40.3 12.5 62.1 12.5c6.9 0 13.1-4.5 15.2-11.1c2.1-6.6-.2-13.8-5.8-17.9l0 0 0 0-.2-.2c-.2-.2-.6-.4-1.1-.8c-1-.8-2.5-2-4.3-3.7c-3.6-3.3-8.5-8.1-13.3-14.3c-5.5-7-10.7-15.4-14.2-24.7c24.9-29 39.6-64.7 39.6-103.4c0-92.8-84.9-168.9-192.6-175.5c.4 5.1 .6 10.3 .6 15.5z"/></svg>',
-        user: '<svg viewBox="0 0 448 512" fill="currentColor" style="width:1em;height:1em"><path d="M224 256A128 128 0 1 0 224 0a128 128 0 1 0 0 256zm-45.7 48C79.8 304 0 383.8 0 482.3C0 498.7 13.3 512 29.7 512H418.3c16.4 0 29.7-13.3 29.7-29.7C448 383.8 368.2 304 269.7 304H178.3z"/></svg>',
-        send: '<svg viewBox="0 0 512 512" fill="currentColor" style="width:1em;height:1em"><path d="M498.1 5.6c10.1 7 15.4 19.1 13.5 31.2l-64 416c-1.5 9.7-7.4 18.2-16 23s-18.9 5.4-28 1.6L284 427.7l-68.5 74.1c-8.9 9.7-22.9 12.9-35.2 8.1S160 493.2 160 480V396.4c0-4 1.5-7.8 4.2-10.7L331.8 202.8c5.8-6.3 5.6-16-.4-22s-15.7-6.4-22-.7L106 360.8 17.7 316.6C7.1 311.3 .3 300.7 0 288.9s5.9-22.8 16.1-28.7l448-256c10.7-6.1 23.9-5.5 34 1.4z"/></svg>',
-        times:
-          '<svg viewBox="0 0 384 512" fill="currentColor" style="width:1em;height:1em"><path d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3 297.4 406.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256 342.6 150.6z"/></svg>',
-      };
-      return icons[name] || "";
-    }
-
-    attachEventListeners() {
-      this.elements.button.addEventListener("click", () => this.toggleChat());
-      this.overlay.addEventListener("click", () => this.closeChat());
-      this.elements.sendButton.addEventListener("click", () =>
-        this.sendMessage(),
-      );
-      this.elements.input.addEventListener("keypress", (e) => {
-        if (e.key === "Enter" && !this.waitingForResponse) {
-          this.sendMessage();
-        }
+    // ── EVENT LISTENERS ───────────────────────────────────────────────────────
+    attachListeners() {
+      this.el.launcher.addEventListener("click", () => this._toggle());
+      this.backdrop.addEventListener("click", () => this._close());
+      this.el.close.addEventListener("click", () => this._close());
+      this.el.back.addEventListener("click", () => {
+        this._reset();
+        this._go("welcome");
       });
-
       document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && this.isChatOpen) {
-          this.closeChat();
-        }
+        if (e.key === "Escape" && this.isOpen) this._close();
+      });
+
+      this.el.send.addEventListener("click", () => this._sendInput());
+      this.el.inp.addEventListener("keypress", (e) => {
+        if (e.key === "Enter" && !this.busy) this._sendInput();
+      });
+
+      // welcome buttons
+      this.el.btnChat.addEventListener("click", () => {
+        this.chatMode = "general";
+        this._go("chat");
+        this.el.bar.style.display = "flex";
+        this._addMsg("bot", "Hello 👋 How can we help you today?");
+        this._addMsg("user", "Chat With Us");
+        this._setBusy(true);
+        this._showTyping();
+        setTimeout(() => {
+          this._removeTyping();
+          this._setBusy(false);
+          this._addMsg("bot", WELCOME_MSG);
+        }, 1000);
+      });
+
+      this.el.btnSched.addEventListener("click", () => {
+        this.chatMode = "booking";
+        this._go("chat");
+        this._addMsg("bot", "Hello 👋 How can we help you today?");
+        this._addMsg("user", "Schedule an Appointment");
+        this._setBusy(true);
+        this._showTyping();
+        this.el.bar.style.display = "none";
+        setTimeout(() => {
+          this._removeTyping();
+          this._setBusy(false);
+          this._addMsg(
+            "bot",
+            "Excellent! We're excited to help you book your appointment. 😊",
+          );
+          setTimeout(() => {
+            this._addMsg("bot", "Great! Let's start with your first name.");
+            this._renderInlineForm();
+          }, 800);
+        }, 1000);
       });
     }
 
-    toggleChat() {
-      this.isChatOpen ? this.closeChat() : this.openChat();
+    // ── OPEN / CLOSE / TOGGLE ─────────────────────────────────────────────────
+    _toggle() {
+      this.isOpen ? this._close() : this._open();
     }
 
-    openChat() {
-      this.isChatOpen = true;
-      this.elements.widget.classList.add("active");
-      this.overlay.classList.add("active");
-      this.elements.button.classList.add("active");
-      this.elements.button.innerHTML = this.getIcon("times");
-      this.elements.input.focus();
-
-      if (!this.hasShownWelcome) {
-        this.hasShownWelcome = true;
-        this.elements.welcomeMessage.style.display = "none";
-        setTimeout(() => {
-          this.addMessage("bot", this.config.greeting);
-        }, 300);
-      } else if (this.elements.messagesContainer.children.length > 1) {
-        this.elements.welcomeMessage.style.display = "none";
-      }
-
-      // Trigger custom event
+    _open() {
+      this.isOpen = true;
+      this.el.panel.classList.add("active");
+      this.backdrop.classList.add("active");
+      this.el.launcher.classList.add("open");
+      this.el.launcher.innerHTML = '<i class="fas fa-times"></i>';
+      this._go("welcome");
       this.triggerEvent("chatOpened");
     }
 
-    closeChat() {
-      this.isChatOpen = false;
-      this.elements.widget.classList.remove("active");
-      this.overlay.classList.remove("active");
-      this.elements.button.classList.remove("active");
-      this.elements.button.innerHTML = this.getIcon("comments");
-
-      // Trigger custom event
+    _close() {
+      this.isOpen = false;
+      this.el.panel.classList.remove("active");
+      this.backdrop.classList.remove("active");
+      this.el.launcher.classList.remove("open");
+      this.el.launcher.innerHTML = '<i class="fas fa-comment-dots"></i>';
+      this._reset();
       this.triggerEvent("chatClosed");
     }
 
-    async sendMessage() {
-      const message = this.elements.input.value.trim();
+    // ── SCREEN ROUTING ────────────────────────────────────────────────────────
+    _go(name) {
+      this.curScreen = name;
+      this.el.welcome.classList.toggle("active", name === "welcome");
+      this.el.chat.classList.toggle("active", name === "chat");
+      this.el.back.style.display = name === "welcome" ? "none" : "flex";
+      if (name === "chat") this.el.inp.focus();
+    }
 
-      if (!message || this.isTyping || this.waitingForResponse) return;
+    // ── RESET ─────────────────────────────────────────────────────────────────
+    _reset() {
+      this.SID = generateUUID(); // fresh session = fresh backend context
+      this.chatMode = "general";
+      this.bs = {
+        patientId: null,
+        practitionerId: null,
+        locationId: null,
+        appointmentTypeId: null,
+        selectedSlot: null,
+      };
+      this.curOpts = null;
+      this.busy = false;
+      this.el.msgs.innerHTML = "";
+      this.el.inp.disabled = false;
+      this.el.send.disabled = false;
+      this.el.bar.style.display = "flex";
+      this._removeTyping();
+    }
 
-      // Handle numeric option selection
-      if (this.currentOptions && /^\d+$/.test(message)) {
-        const optionIndex = parseInt(message) - 1;
+    // ── SEND INPUT (free text) ────────────────────────────────────────────────
+    _sendInput() {
+      const m = this.el.inp.value.trim();
+      if (!m || this.busy) return;
+      this.el.inp.value = "";
 
-        if (
-          optionIndex >= 0 &&
-          optionIndex < this.currentOptions.options.length
-        ) {
-          const selectedOption = this.currentOptions.options[optionIndex];
-
-          if (this.currentOptions.type === "location") {
-            this.bookingState.locationId = selectedOption.id;
-          } else if (this.currentOptions.type === "appointmentType") {
-            this.bookingState.appointmentTypeId = selectedOption.id;
-          }
-
-          const optionsContainer = this.container.querySelector(
-            ".ai-options-container",
-          );
-          if (optionsContainer) {
-            optionsContainer.remove();
-          }
-
-          this.currentOptions = null;
-        }
+      // general→booking intent upgrade
+      if (this.chatMode === "general" && detectsBookingIntent(m)) {
+        this.chatMode = "booking";
+        this._addMsg("user", m);
+        this._addMsg(
+          "bot",
+          "Of course! Let me get your appointment set up. 😊",
+        );
+        setTimeout(() => {
+          this.el.bar.style.display = "none";
+          setTimeout(() => {
+            this._addMsg("bot", "Let's start with your first name.");
+            this._renderInlineForm();
+          }, 600);
+        }, 500);
+        return;
       }
 
-      if (
-        this.elements.welcomeMessage &&
-        this.elements.welcomeMessage.style.display !== "none"
-      ) {
-        this.elements.welcomeMessage.style.display = "none";
-      }
+      this._addMsg("user", m);
+      this._toBackend(m);
+    }
 
-      this.addMessage("user", message);
-      this.elements.input.value = "";
-      this.showTyping();
-      this.isTyping = true;
-      this.waitingForResponse = true;
-      this.elements.sendButton.disabled = true;
-      this.elements.input.disabled = true;
-
+    // ── API CALLS ─────────────────────────────────────────────────────────────
+    async _toBackend(message) {
+      this._setBusy(true);
+      this._showTyping();
       try {
-        const response = await fetch(this.config.apiUrl, {
+        const r = await fetch(this.config.apiUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            sessionId: this.sessionId,
-            message: message,
-            patientId: this.bookingState.patientId,
-            bookingState: this.bookingState,
+            sessionId: this.SID,
+            message,
+            bookingState: this.bs,
+            mode: this.chatMode,
             extra: null,
           }),
         });
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        this.removeTyping();
-        this.handleBackendResponse(data.reply);
-
-        // Trigger custom event
-        this.triggerEvent("messageSent", { message, response: data });
-      } catch (error) {
-        console.error("AI Chat Widget Error:", error);
-        this.removeTyping();
-        this.addMessage(
+        this._removeTyping();
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        this._handleReply((await r.json()).reply);
+        this.triggerEvent("messageSent", { message });
+      } catch (err) {
+        this._removeTyping();
+        this._addMsg(
           "bot",
           "Sorry, I'm having trouble connecting. Please try again.",
         );
-
-        // Trigger custom event
-        this.triggerEvent("error", { error });
+        this.triggerEvent("error", { error: err });
       } finally {
-        this.isTyping = false;
-        this.waitingForResponse = false;
-        this.elements.sendButton.disabled = false;
-        this.elements.input.disabled = false;
-        this.elements.input.focus();
+        this._setBusy(false);
       }
     }
 
-    handleBackendResponse(reply) {
-      // Handle state clearing signals
+    async _sendSel(value, extra = null) {
+      this._setBusy(true);
+      this._showTyping();
+      try {
+        const r = await fetch(this.config.apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: this.SID,
+            message: value,
+            bookingState: this.bs,
+            mode: this.chatMode,
+            extra,
+          }),
+        });
+        this._removeTyping();
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        this._handleReply((await r.json()).reply);
+      } catch (err) {
+        this._removeTyping();
+        this._addMsg("bot", "Error processing your selection.");
+      } finally {
+        this._setBusy(false);
+      }
+    }
+
+    // ── REPLY HANDLER ─────────────────────────────────────────────────────────
+    _handleReply(reply) {
+      // state clearing signals
       if (reply.type === "restart_booking" || reply.clearState) {
-        this.bookingState = {
+        this.bs = {
           patientId: null,
+          practitionerId: null,
           locationId: null,
           appointmentTypeId: null,
           selectedSlot: null,
         };
-        const optionsContainer = this.container.querySelector(
-          ".ai-options-container",
-        );
-        if (optionsContainer) optionsContainer.remove();
-        this.currentOptions = null;
+        this._rmOpts();
       }
-
-      if (reply.type === "clear_patient") {
-        this.bookingState.patientId = null;
+      if (reply.type === "clear_patient") this.bs.patientId = null;
+      if (reply.type === "clear_practitioner" || reply.clearPractitioner) {
+        Object.assign(this.bs, {
+          practitionerId: null,
+          locationId: null,
+          appointmentTypeId: null,
+          selectedSlot: null,
+        });
+        this._rmOpts();
       }
-
       if (reply.clearLocation) {
-        this.bookingState.locationId = null;
-        this.bookingState.appointmentTypeId = null;
-        this.bookingState.selectedSlot = null;
-        const optionsContainer = this.container.querySelector(
-          ".ai-options-container",
-        );
-        if (optionsContainer) optionsContainer.remove();
-        this.currentOptions = null;
+        Object.assign(this.bs, {
+          locationId: null,
+          appointmentTypeId: null,
+          selectedSlot: null,
+        });
+        this._rmOpts();
       }
-
       if (reply.clearAppointmentType) {
-        this.bookingState.appointmentTypeId = null;
-        this.bookingState.selectedSlot = null;
-        const optionsContainer = this.container.querySelector(
-          ".ai-options-container",
-        );
-        if (optionsContainer) optionsContainer.remove();
-        this.currentOptions = null;
+        Object.assign(this.bs, { appointmentTypeId: null, selectedSlot: null });
+        this._rmOpts();
       }
-
       if (reply.clearSlot) {
-        this.bookingState.selectedSlot = null;
-        const optionsContainer = this.container.querySelector(
-          ".ai-options-container",
-        );
-        if (optionsContainer) optionsContainer.remove();
-        this.currentOptions = null;
+        this.bs.selectedSlot = null;
+        this._rmOpts();
       }
 
-      // Update patientId if present
-      if (reply.patientId && !this.bookingState.patientId) {
-        this.bookingState.patientId = reply.patientId;
-      }
+      // store IDs from response
+      if (reply.patientId && !this.bs.patientId)
+        this.bs.patientId = reply.patientId;
+      if (reply.practitionerId && !this.bs.practitionerId)
+        this.bs.practitionerId = reply.practitionerId;
 
-      // Always display AI message first if present
-      // Support both 'aiMessage' and 'message' field names
-      const messageText = reply.aiMessage || reply.message;
-      if (messageText) {
-        this.addMessage("bot", messageText);
-      }
+      const isNoSlots = reply.type === "available_slots" && !reply.data?.length;
+      if (reply.aiMessage && !isNoSlots) this._addMsg("bot", reply.aiMessage);
 
-      // Handle different response types
       switch (reply.type) {
+        case "practitioner_verified":
+          if (reply.practitionerId)
+            this.bs.practitionerId = reply.practitionerId;
+          break;
+        case "practitioners_list":
+          if (reply.data?.length) this._renderPracts(reply.data);
+          break;
         case "patient_verified":
-          if (reply.patientId) {
-            this.bookingState.patientId = reply.patientId;
-          }
+          if (reply.patientId) this.bs.patientId = reply.patientId;
           break;
-
         case "locations_list":
-          if (reply.data && reply.data.length > 0) {
-            this.renderOptions("location", reply.data);
-          }
+          if (reply.data?.length) this._renderOpts("location", reply.data);
           break;
-
         case "appointment_types_list":
-          if (reply.data && reply.data.length > 0) {
-            this.renderOptions("appointmentType", reply.data);
-          }
+          if (reply.data?.length)
+            this._renderOpts("appointmentType", reply.data);
           break;
-
         case "available_slots":
-          if (reply.data && reply.data.length > 0) {
-            this.renderSlotOptions(reply.data);
-          } else {
-            if (!messageText) {
-              this.addMessage(
-                "bot",
-                "No available slots found for the selected dates.",
-              );
-            }
-            if (reply.unavailableDates && reply.unavailableDates.length > 0) {
-              this.renderNoSlotsMessage(reply.unavailableDates);
-            }
-          }
+          if (reply.data?.length) this._renderSlots(reply.data);
+          else if (reply.unavailableDates?.length)
+            this._renderNoSlots(reply.unavailableDates);
           break;
-
         case "appointment_confirmed":
-          this.bookingState = {
-            patientId: this.bookingState.patientId,
+          this.bs = {
+            patientId: null,
+            practitionerId: null,
             locationId: null,
             appointmentTypeId: null,
             selectedSlot: null,
           };
           break;
-
         case "error":
-          const errorMsg = messageText || "Sorry, something went wrong.";
-          if (!messageText) {
-            this.addMessage("bot", `❌ ${errorMsg}`);
-          }
+          if (!reply.aiMessage)
+            this._addMsg(
+              "bot",
+              "❌ " + (reply.message || "Something went wrong."),
+            );
           break;
-
-        case "message":
-          break;
+        default:
+          if (!reply.aiMessage && reply.message)
+            this._addMsg("bot", reply.message);
       }
     }
 
-    addMessage(sender, text) {
-      const messageDiv = document.createElement("div");
-      messageDiv.className = `ai-message ${sender}`;
+    // ── UI HELPERS ────────────────────────────────────────────────────────────
+    _setBusy(v) {
+      this.busy = v;
+      this.el.inp.disabled = v;
+      this.el.send.disabled = v;
+    }
 
-      const time = new Date().toLocaleTimeString([], {
+    _addMsg(who, text) {
+      const d = document.createElement("div");
+      d.className = "aiw-msg " + who;
+      const t = new Date().toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
       });
-
-      const avatarIcon =
-        sender === "bot" ? this.getIcon("robot") : this.getIcon("user");
-
-      messageDiv.innerHTML = `
-        <div class="ai-message-avatar">
-          ${avatarIcon}
-        </div>
-        <div class="ai-message-content">
-          <div class="ai-message-bubble">${this.escapeHtml(text)}</div>
-          <div class="ai-message-time">${time}</div>
-        </div>
-      `;
-
-      this.elements.messagesContainer.appendChild(messageDiv);
-      this.scrollToBottom();
+      d.innerHTML = `
+        <div class="aiw-av"><i class="${who === "bot" ? "fas fa-robot" : "fas fa-user"}"></i></div>
+        <div class="aiw-mbody">
+          <div class="aiw-bubble">${this._esc(text)}</div>
+          <div class="aiw-mtime">${t}</div>
+        </div>`;
+      this.el.msgs.appendChild(d);
+      this._scrollBottom();
+      if (who === "bot") this._playSound();
     }
 
-    showTyping() {
-      const typingDiv = document.createElement("div");
-      typingDiv.className = "ai-message bot";
-      typingDiv.id = "ai-typing-indicator";
-      typingDiv.innerHTML = `
-        <div class="ai-message-avatar">
-          ${this.getIcon("robot")}
-        </div>
-        <div class="ai-message-content">
-          <div class="ai-message-bubble">
-            <div class="ai-typing-indicator">
-              <div class="ai-typing-dot"></div>
-              <div class="ai-typing-dot"></div>
-              <div class="ai-typing-dot"></div>
-            </div>
+    _showTyping() {
+      const d = document.createElement("div");
+      d.className = "aiw-msg bot";
+      d.id = "aiwTyping";
+      d.innerHTML = `<div class="aiw-av"><i class="fas fa-robot"></i></div>
+        <div class="aiw-mbody"><div class="aiw-bubble">
+          <div class="aiw-typing-row">
+            <div class="aiw-dot"></div><div class="aiw-dot"></div><div class="aiw-dot"></div>
           </div>
-        </div>
-      `;
-
-      this.elements.messagesContainer.appendChild(typingDiv);
-      this.scrollToBottom();
+        </div></div>`;
+      this.el.msgs.appendChild(d);
+      this._scrollBottom();
+    }
+    _removeTyping() {
+      document.getElementById("aiwTyping")?.remove();
+    }
+    _rmOpts() {
+      this.el.msgs.querySelector(".aiw-opts")?.remove();
+      this.curOpts = null;
     }
 
-    removeTyping() {
-      const typingIndicator = document.getElementById("ai-typing-indicator");
-      if (typingIndicator) {
-        typingIndicator.remove();
-      }
-    }
-
-    renderOptions(optionType, options) {
-      this.currentOptions = { type: optionType, options: options };
-
-      const container = document.createElement("div");
-      container.className = "ai-options-container";
-
-      options.forEach((opt, index) => {
-        const btn = document.createElement("button");
-        btn.className = "ai-option-button";
-        btn.textContent = `${index + 1}. ${opt.name || opt.type}`;
-
-        btn.onclick = () => {
-          this.addMessage("user", opt.name || opt.type);
-
-          if (optionType === "location") {
-            this.bookingState.locationId = opt.id;
-          } else if (optionType === "appointmentType") {
-            this.bookingState.appointmentTypeId = opt.id;
-          }
-
-          this.sendSelection(opt.id.toString(), optionType);
-          container.remove();
-          this.currentOptions = null;
+    _renderPracts(list) {
+      const wrap = document.createElement("div");
+      wrap.className = "aiw-opts";
+      list.forEach((p, i) => {
+        const b = document.createElement("button");
+        b.className = "aiw-opt";
+        b.textContent = `${i + 1}. ${p.name}`;
+        b.onclick = () => {
+          this._addMsg("user", p.name);
+          this.bs.practitionerId = p.id;
+          this._sendSel(`practitioner_${p.id}`);
+          wrap.remove();
         };
-
-        container.appendChild(btn);
+        wrap.appendChild(b);
       });
-
-      this.elements.messagesContainer.appendChild(container);
-      this.scrollToBottom();
+      this.el.msgs.appendChild(wrap);
+      this._scrollBottom();
     }
 
-    renderSlotOptions(slots) {
-      const container = document.createElement("div");
-      container.className = "ai-options-container";
-
-      slots.forEach((slot, index) => {
-        const btn = document.createElement("button");
-        btn.className = "ai-option-button";
-
-        const startDate = new Date(slot.start.replace(" ", "T"));
-        const displayText = `${index + 1}. ${startDate.toLocaleDateString(
-          "en-US",
-          {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-          },
-        )} - ${slot.title}${slot.practitionerName ? ` (${slot.practitionerName})` : ""}`;
-
-        btn.textContent = displayText;
-
-        btn.onclick = () => {
-          this.addMessage("user", displayText.substring(3));
-
-          this.bookingState.selectedSlot = {
-            id: slot.id,
-            practitionerId: slot.practitionerId,
-            start: slot.start,
-            end: slot.end,
-            practitionerName: slot.practitionerName,
-          };
-
-          this.sendSelection(`slot_${slot.id}`, "slot", {
-            practitionerId: slot.practitionerId,
-            start: slot.start,
-            end: slot.end,
-          });
-          container.remove();
+    _renderOpts(type, opts) {
+      this.curOpts = { type, options: opts };
+      const wrap = document.createElement("div");
+      wrap.className = "aiw-opts";
+      opts.forEach((o) => {
+        const b = document.createElement("button");
+        b.className = "aiw-opt";
+        b.textContent = o.name || o.type;
+        b.onclick = () => {
+          this._addMsg("user", o.name || o.type);
+          if (type === "location") this.bs.locationId = o.id;
+          if (type === "appointmentType") this.bs.appointmentTypeId = o.id;
+          this._sendSel(o.id.toString(), null);
+          wrap.remove();
+          this.curOpts = null;
         };
-
-        container.appendChild(btn);
+        wrap.appendChild(b);
       });
-
-      this.elements.messagesContainer.appendChild(container);
-      this.scrollToBottom();
+      this.el.msgs.appendChild(wrap);
+      this._scrollBottom();
     }
 
-    renderNoSlotsMessage(unavailableDates) {
-      const container = document.createElement("div");
-      container.className = "ai-info-message";
-
-      const dateRange =
-        unavailableDates.length > 0
-          ? `${unavailableDates[0]} to ${unavailableDates[unavailableDates.length - 1]}`
-          : "the selected period";
-
-      container.innerHTML = `
-        <strong>No appointments available</strong> for ${dateRange}.
-      `;
-
-      this.elements.messagesContainer.appendChild(container);
-      this.scrollToBottom();
-    }
-
-    async sendSelection(value, selectionType = null, extra = null) {
-      this.showTyping();
-      this.isTyping = true;
-      this.waitingForResponse = true;
-      this.elements.sendButton.disabled = true;
-      this.elements.input.disabled = true;
-
-      try {
-        const payload = {
-          sessionId: this.sessionId,
-          message: value,
-          patientId: this.bookingState.patientId,
-          bookingState: this.bookingState,
-          extra: extra,
-        };
-
-        const response = await fetch(this.config.apiUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+    _renderSlots(slots) {
+      // Group by date
+      const groups = {},
+        dateKeys = [];
+      slots.forEach((s) => {
+        const dd = new Date(s.start.replace(" ", "T"));
+        const key = dd.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
         });
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        if (!groups[key]) {
+          groups[key] = { dd, slots: [] };
+          dateKeys.push(key);
         }
-
-        const data = await response.json();
-        this.removeTyping();
-        this.handleBackendResponse(data.reply);
-      } catch (err) {
-        console.error("Selection error:", err);
-        this.removeTyping();
-        this.addMessage(
-          "bot",
-          "Sorry, there was an error processing your selection.",
-        );
-      } finally {
-        this.isTyping = false;
-        this.waitingForResponse = false;
-        this.elements.sendButton.disabled = false;
-        this.elements.input.disabled = false;
-        this.elements.input.focus();
-      }
-    }
-
-    escapeHtml(text) {
-      const div = document.createElement("div");
-      div.textContent = text;
-      return div.innerHTML.replace(/\n/g, "<br>");
-    }
-
-    scrollToBottom() {
-      setTimeout(() => {
-        this.elements.messagesContainer.scrollTop =
-          this.elements.messagesContainer.scrollHeight;
-      }, 100);
-    }
-
-    triggerEvent(eventName, data = {}) {
-      const event = new CustomEvent(`aiChatWidget:${eventName}`, {
-        detail: { widget: this, ...data },
+        groups[key].slots.push(s);
       });
-      window.dispatchEvent(event);
+      const preview = groups[dateKeys[0]]?.slots.slice(0, 3) ?? [];
+      const firstDd = groups[dateKeys[0]].dd;
+
+      const card = document.createElement("div");
+      card.className = "aiw-slot-card";
+
+      // head
+      const head = document.createElement("div");
+      head.className = "aiw-slot-head";
+      head.innerHTML = `
+        <div class="aiw-slot-title">${firstDd.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</div>
+        <div class="aiw-slot-sub">Select a time below</div>`;
+      card.appendChild(head);
+
+      // slot list
+      const list = document.createElement("div");
+      list.className = "aiw-slot-list";
+      preview.forEach((s) => {
+        const dd = new Date(s.start.replace(" ", "T"));
+        const lbl = dd.toLocaleTimeString("en-US", {
+          hour: "numeric",
+          minute: "2-digit",
+        });
+        const full = `${firstDd.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} at ${lbl}`;
+        const btn = document.createElement("button");
+        btn.className = "aiw-slot-btn";
+        btn.textContent = lbl;
+        btn.onclick = () => {
+          this._addMsg("user", full);
+          this.bs.selectedSlot = {
+            id: s.id,
+            practitionerId: s.practitionerId,
+            start: s.start,
+            end: s.end,
+          };
+          this._sendSel(`slot_${s.id}`, {
+            practitionerId: s.practitionerId,
+            start: s.start,
+            end: s.end,
+          });
+          card.remove();
+        };
+        list.appendChild(btn);
+      });
+      card.appendChild(list);
+
+      // "see all" button
+      if (slots.length > preview.length) {
+        const more = document.createElement("button");
+        more.className = "aiw-slot-more";
+        more.innerHTML = `<i class="fas fa-calendar-alt"></i> See all available slots`;
+        more.onclick = () =>
+          this._openSlotsOverlay(slots, groups, dateKeys, card);
+        card.appendChild(more);
+      }
+
+      this.el.msgs.appendChild(card);
+      this._scrollBottom();
     }
 
-    // Public API methods
-    destroy() {
-      if (this.container) {
-        this.container.remove();
+    _openSlotsOverlay(slots, groups, dateKeys, sourceCard) {
+      const ov = document.createElement("div");
+      ov.className = "aiw-ov";
+
+      const head = document.createElement("div");
+      head.className = "aiw-ov-head";
+      head.innerHTML = `
+        <button class="aiw-ov-back"><i class="fas fa-chevron-left"></i></button>
+        <strong style="font-size:14px;color:var(--aiw-text)">Available Slots</strong>`;
+      ov.appendChild(head);
+      head.querySelector(".aiw-ov-back").onclick = () => ov.remove();
+
+      const body = document.createElement("div");
+      body.className = "aiw-ov-body";
+
+      dateKeys.forEach((key, gi) => {
+        const { dd, slots: daySlots } = groups[key];
+        if (gi > 0) {
+          const hr = document.createElement("hr");
+          hr.style.cssText =
+            "border:none;border-top:1px solid #e8e8e8;margin:4px 0 20px";
+          body.appendChild(hr);
+        }
+        const row = document.createElement("div");
+        row.style.cssText =
+          "display:flex;gap:16px;align-items:flex-start;margin-bottom:20px";
+
+        const dateCol = document.createElement("div");
+        dateCol.style.cssText = "min-width:54px;padding-top:2px;flex-shrink:0";
+        dateCol.innerHTML = `
+          <div style="font-size:15px;font-weight:700;color:var(--aiw-text);line-height:1.2">
+            ${dd.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+          </div>
+          <div style="font-size:12px;color:#888">${dd.toLocaleDateString("en-US", { weekday: "short" })}</div>`;
+
+        const timesCol = document.createElement("div");
+        timesCol.style.cssText =
+          "flex:1;display:flex;flex-direction:column;gap:8px";
+
+        daySlots.forEach((s) => {
+          const slotDd = new Date(s.start.replace(" ", "T"));
+          const lbl = slotDd.toLocaleTimeString("en-US", {
+            hour: "numeric",
+            minute: "2-digit",
+          });
+          const full = `${dd.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} at ${lbl}`;
+          const btn = document.createElement("button");
+          btn.className = "aiw-slot-btn";
+          btn.textContent = lbl;
+          btn.onclick = () => {
+            this._addMsg("user", full);
+            this.bs.selectedSlot = {
+              id: s.id,
+              practitionerId: s.practitionerId,
+              start: s.start,
+              end: s.end,
+            };
+            this._sendSel(`slot_${s.id}`, {
+              practitionerId: s.practitionerId,
+              start: s.start,
+              end: s.end,
+            });
+            ov.remove();
+            sourceCard.remove();
+          };
+          timesCol.appendChild(btn);
+        });
+        row.appendChild(dateCol);
+        row.appendChild(timesCol);
+        body.appendChild(row);
+      });
+
+      ov.appendChild(body);
+      this.el.panel.appendChild(ov);
+    }
+
+    _renderNoSlots(dates) {
+      const notice = document.createElement("div");
+      notice.className = "aiw-no-slots";
+      const range = dates.length
+        ? `${dates[0]} to ${dates[dates.length - 1]}`
+        : "the selected period";
+      notice.innerHTML = `<i class="fas fa-info-circle" style="margin-right:7px"></i><strong>No slots available</strong> for ${range}.`;
+      this.el.msgs.appendChild(notice);
+      this._scrollBottom();
+      setTimeout(() => {
+        this._addMsg(
+          "bot",
+          "Please choose a different location and I'll find available slots for you:",
+        );
+        this._renderOpts("location", [
+          { id: 1, name: "Utrecht" },
+          { id: 2, name: "Arnhem" },
+          { id: 3, name: "Amsterdam" },
+          { id: 4, name: "The Hague" },
+          { id: 5, name: "Rotterdam" },
+          { id: 6, name: "Haarlem" },
+          { id: 7, name: "Kleiweg" },
+          { id: 8, name: "Amersfoort" },
+        ]);
+      }, 600);
+    }
+
+    // ── INLINE CONVERSATIONAL FORM ────────────────────────────────────────────
+    _renderInlineForm() {
+      setTimeout(() => this._renderFirstNameField(), 800);
+    }
+
+    _makeCard(id) {
+      const card = document.createElement("div");
+      card.id = id;
+      card.className = "aiw-field-card";
+      return card;
+    }
+
+    _makeSBtn() {
+      return `<button type="button" class="aiw-sbtn">
+        <span class="s-icon"><i class="fas fa-arrow-right"></i></span>
+        <div class="s-spinner"></div>
+        <span class="s-tick"><i class="fas fa-check"></i></span>
+      </button>`;
+    }
+
+    async _animateFieldSuccess(card, input, btn) {
+      btn.disabled = true;
+      btn.classList.add("loading");
+      await this._delay(220);
+      btn.classList.remove("loading");
+      btn.classList.add("success");
+      input.classList.add("success");
+      card.style.boxShadow = "0 2px 16px rgba(34,197,94,.18)";
+      await this._delay(420);
+    }
+
+    _delay(ms) {
+      return new Promise((r) => setTimeout(r, ms));
+    }
+
+    // STEP 1 — First Name
+    _renderFirstNameField() {
+      const card = this._makeCard("aiwFirstName");
+      card.innerHTML = `
+        <label class="aiw-field-label">First Name</label>
+        <div class="aiw-field-row">
+          <input id="aiwFnInp" class="aiw-field-inp" type="text" placeholder="John" />
+          ${this._makeSBtn()}
+        </div>
+        <div class="aiw-field-err" id="aiwFnErr"></div>`;
+      this.el.msgs.appendChild(card);
+      this._scrollBottom();
+
+      const inp = card.querySelector("#aiwFnInp");
+      const btn = card.querySelector(".aiw-sbtn");
+      const err = card.querySelector("#aiwFnErr");
+      setTimeout(() => inp.focus(), 100);
+
+      const submit = async () => {
+        const val = inp.value.trim();
+        if (!val || val.length < 2) {
+          err.textContent = "Please enter your first name";
+          err.style.display = "block";
+          inp.style.borderColor = "#e74c3c";
+          inp.focus();
+          return;
+        }
+        err.style.display = "none";
+        inp.disabled = true;
+        await this._animateFieldSuccess(card, inp, btn);
+        this._addMsg("user", val);
+        card.remove();
+        setTimeout(() => {
+          this._addMsg("bot", "Great! What's your last name?");
+          this._renderLastNameField(val);
+        }, 600);
+      };
+      btn.addEventListener("click", submit);
+      inp.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") submit();
+      });
+      inp.addEventListener("input", () => {
+        err.style.display = "none";
+        inp.style.borderColor = "";
+      });
+    }
+
+    // STEP 2 — Last Name
+    _renderLastNameField(firstName) {
+      const card = this._makeCard("aiwLastName");
+      card.innerHTML = `
+        <label class="aiw-field-label">Last Name</label>
+        <div class="aiw-field-row">
+          <input id="aiwLnInp" class="aiw-field-inp" type="text" placeholder="Doe" />
+          ${this._makeSBtn()}
+        </div>
+        <div class="aiw-field-err" id="aiwLnErr"></div>`;
+      this.el.msgs.appendChild(card);
+      this._scrollBottom();
+
+      const inp = card.querySelector("#aiwLnInp");
+      const btn = card.querySelector(".aiw-sbtn");
+      const err = card.querySelector("#aiwLnErr");
+      setTimeout(() => inp.focus(), 100);
+
+      const submit = async () => {
+        const val = inp.value.trim();
+        if (!val || val.length < 2) {
+          err.textContent = "Please enter your last name";
+          err.style.display = "block";
+          inp.style.borderColor = "#e74c3c";
+          inp.focus();
+          return;
+        }
+        err.style.display = "none";
+        inp.disabled = true;
+        await this._animateFieldSuccess(card, inp, btn);
+        this._addMsg("user", val);
+        card.remove();
+        setTimeout(() => {
+          this._addMsg(
+            "bot",
+            `Thanks ${firstName} ${val}! What's your email address?`,
+          );
+          this._renderEmailField(firstName, val);
+        }, 600);
+      };
+      btn.addEventListener("click", submit);
+      inp.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") submit();
+      });
+      inp.addEventListener("input", () => {
+        err.style.display = "none";
+        inp.style.borderColor = "";
+      });
+    }
+
+    // STEP 3 — Email
+    _renderEmailField(firstName, lastName) {
+      const card = this._makeCard("aiwEmail");
+      card.innerHTML = `
+        <label class="aiw-field-label">Email</label>
+        <div class="aiw-field-row">
+          <input id="aiwEmInp" class="aiw-field-inp" type="email" placeholder="email@example.com" />
+          ${this._makeSBtn()}
+        </div>
+        <div class="aiw-field-err" id="aiwEmErr"></div>`;
+      this.el.msgs.appendChild(card);
+      this._scrollBottom();
+
+      const inp = card.querySelector("#aiwEmInp");
+      const btn = card.querySelector(".aiw-sbtn");
+      const err = card.querySelector("#aiwEmErr");
+      setTimeout(() => inp.focus(), 100);
+
+      const submit = async () => {
+        const val = inp.value.trim();
+        if (!/^[\w.%+-]+@[\w.-]+\.[a-zA-Z]{2,}$/.test(val)) {
+          err.textContent = "Please enter a valid email address";
+          err.style.display = "block";
+          inp.style.borderColor = "#e74c3c";
+          inp.focus();
+          return;
+        }
+        err.style.display = "none";
+        inp.disabled = true;
+        await this._animateFieldSuccess(card, inp, btn);
+        this._addMsg("user", val);
+        card.remove();
+        setTimeout(() => {
+          this._addMsg(
+            "bot",
+            "Perfect! Do you have a preferred practitioner you'd like to see? (Optional - just hit Continue if you'd like to see all available appointments)",
+          );
+          this._renderPractitionerField(val, firstName, lastName);
+        }, 600);
+      };
+      btn.addEventListener("click", submit);
+      inp.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") submit();
+      });
+      inp.addEventListener("input", () => {
+        err.style.display = "none";
+        inp.style.borderColor = "";
+      });
+    }
+
+    // STEP 4 — Practitioner (optional)
+    _renderPractitionerField(email, firstName, lastName) {
+      let selectedP = null;
+      let debounce = null;
+      let highlight = -1;
+
+      const wrap = document.createElement("div");
+      wrap.className = "aiw-field-card";
+      wrap.innerHTML = `
+        <label class="aiw-field-label" style="color:#aaa">
+          Practitioner <span style="font-weight:400;font-size:12px">(optional)</span>
+        </label>
+        <div class="aiw-pract-wrap">
+          <input id="aiwPrInp" class="aiw-field-inp" type="text" placeholder="Search by name…" autocomplete="off" />
+          <div class="aiw-pspinner" id="aiwPrSpin"></div>
+          <button class="aiw-pclear" id="aiwPrClear" type="button" style="display:none">
+            <i class="fas fa-times"></i>
+          </button>
+          <div class="aiw-pdropdown" id="aiwPrDrop"></div>
+        </div>
+        <div class="aiw-pbadge" id="aiwPrBadge" style="display:none">
+          <i class="fas fa-user-md"></i>
+          <span id="aiwPrBadgeTxt"></span>
+          <button class="aiw-pbadge-x" id="aiwPrBadgeX" type="button">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="aiw-field-err" id="aiwPrErr" style="display:none">Please select a practitioner from the list</div>
+        <button class="aiw-continue-btn" id="aiwPrSubmit">
+          Continue <i class="fas fa-arrow-right"></i>
+        </button>`;
+      this.el.msgs.appendChild(wrap);
+      this._scrollBottom();
+
+      const prInp = wrap.querySelector("#aiwPrInp");
+      const prSpin = wrap.querySelector("#aiwPrSpin");
+      const prClear = wrap.querySelector("#aiwPrClear");
+      const prDrop = wrap.querySelector("#aiwPrDrop");
+      const prBadge = wrap.querySelector("#aiwPrBadge");
+      const prBadgeTxt = wrap.querySelector("#aiwPrBadgeTxt");
+      const prBadgeX = wrap.querySelector("#aiwPrBadgeX");
+      const prErr = wrap.querySelector("#aiwPrErr");
+      const prSubmit = wrap.querySelector("#aiwPrSubmit");
+
+      setTimeout(() => prInp.focus(), 100);
+
+      const selectP = (p) => {
+        selectedP = p;
+        prInp.value = "";
+        prBadgeTxt.textContent = p.name;
+        prBadge.style.display = "flex";
+        prClear.style.display = "none";
+        prDrop.classList.remove("open");
+        prErr.style.display = "none";
+      };
+
+      prInp.addEventListener("input", async () => {
+        const q = prInp.value.trim();
+        prClear.style.display = q.length > 0 && !selectedP ? "flex" : "none";
+        selectedP = null;
+        prBadge.style.display = "none";
+        clearTimeout(debounce);
+        if (q.length < 1) {
+          prDrop.classList.remove("open");
+          return;
+        }
+        debounce = setTimeout(async () => {
+          prSpin.classList.add("show");
+          prClear.style.display = "none";
+          const results = await this._searchPractitioners(q);
+          prSpin.classList.remove("show");
+          prClear.style.display = q.length > 0 ? "flex" : "none";
+          this._renderPractDropdown(results, prDrop, selectP);
+        }, 300);
+      });
+
+      prClear.addEventListener("click", () => {
+        selectedP = null;
+        prInp.value = "";
+        prBadge.style.display = "none";
+        prClear.style.display = "none";
+        prDrop.classList.remove("open");
+        prInp.focus();
+      });
+      prBadgeX.addEventListener("click", () => {
+        selectedP = null;
+        prInp.value = "";
+        prBadge.style.display = "none";
+        prClear.style.display = "none";
+        prInp.focus();
+      });
+
+      prInp.addEventListener("keydown", (e) => {
+        const items = prDrop.querySelectorAll(".aiw-pitem");
+        if (!prDrop.classList.contains("open") || !items.length) return;
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          highlight = Math.min(highlight + 1, items.length - 1);
+          items.forEach((el, i) =>
+            el.classList.toggle("active", i === highlight),
+          );
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          highlight = Math.max(highlight - 1, 0);
+          items.forEach((el, i) =>
+            el.classList.toggle("active", i === highlight),
+          );
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          if (highlight >= 0)
+            items[highlight].dispatchEvent(new Event("mousedown"));
+          else finalSubmit();
+        } else if (e.key === "Escape") prDrop.classList.remove("open");
+      });
+      prInp.addEventListener("blur", () =>
+        setTimeout(() => prDrop.classList.remove("open"), 150),
+      );
+
+      const finalSubmit = () => {
+        if (prInp.value.trim() && !selectedP) {
+          prErr.style.display = "block";
+          prInp.style.borderColor = "#e74c3c";
+          prInp.focus();
+          return;
+        }
+        const practName = selectedP ? selectedP.name : null;
+        const msg = practName
+          ? `I want to book an appointment with ${practName}. My name is ${firstName} ${lastName} and my email is ${email}`
+          : `I want to book an appointment. My name is ${firstName} ${lastName} and my email is ${email}`;
+        wrap.remove();
+        this._addMsg(
+          "user",
+          practName
+            ? `Practitioner: ${practName}`
+            : "Show all available appointments",
+        );
+        this.chatMode = "booking";
+        this._toBackend(msg);
+      };
+      prSubmit.addEventListener("click", finalSubmit);
+    }
+
+    // practitioner autocomplete helpers
+    _renderPractDropdown(results, dropdown, onSelect) {
+      dropdown.innerHTML = "";
+      if (!results.length) {
+        dropdown.innerHTML =
+          '<div class="aiw-pempty">No practitioners found</div>';
+        dropdown.classList.add("open");
+        return;
       }
-      if (this.overlay) {
-        this.overlay.remove();
+      results.forEach((p) => {
+        const d = document.createElement("div");
+        d.className = "aiw-pitem";
+        d.innerHTML = '<i class="fas fa-user-md"></i> ' + p.name;
+        d.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          onSelect(p);
+        });
+        dropdown.appendChild(d);
+      });
+      dropdown.classList.add("open");
+    }
+
+    async _searchPractitioners(q) {
+      try {
+        const r = await fetch(
+          `${this.config.practitionerSearchUrl}?q=${encodeURIComponent(q)}`,
+        );
+        if (!r.ok) throw new Error();
+        return (await r.json()).practitioners ?? [];
+      } catch {
+        return [];
       }
-      const style = document.getElementById("ai-chat-widget-styles");
-      if (style) {
-        style.remove();
-      }
+    }
+
+    // ── SOUND ─────────────────────────────────────────────────────────────────
+    _playSound() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator(),
+          gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.setValueAtTime(800, ctx.currentTime);
+        osc.frequency.setValueAtTime(600, ctx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.3);
+      } catch {}
+    }
+
+    // ── UTILS ─────────────────────────────────────────────────────────────────
+    _esc(t) {
+      const el = document.createElement("div");
+      el.textContent = t;
+      return el.innerHTML.replace(/\n/g, "<br>");
+    }
+
+    _scrollBottom() {
+      setTimeout(() => {
+        this.el.msgs.scrollTop = this.el.msgs.scrollHeight;
+      }, 80);
+    }
+
+    _posCSS() {
+      const map = {
+        "bottom-right": "bottom:30px;right:30px;",
+        "bottom-left": "bottom:30px;left:30px;",
+        "top-right": "top:30px;right:30px;",
+        "top-left": "top:30px;left:30px;",
+      };
+      return map[this.config.position] || map["bottom-right"];
+    }
+
+    _darken(hex, pct) {
+      const n = parseInt(hex.replace("#", ""), 16),
+        a = -Math.round(2.55 * pct);
+      const clamp = (v) => Math.max(0, Math.min(255, v));
+      return (
+        "#" +
+        [0, 8, 16]
+          .map((s) =>
+            clamp(((n >> s) & 0xff) + a)
+              .toString(16)
+              .padStart(2, "0"),
+          )
+          .reverse()
+          .join("")
+      );
+    }
+
+    _lighten(hex) {
+      // produce a very light tint (opacity-like effect)
+      const n = parseInt(hex.replace("#", ""), 16);
+      const mix = (c) => Math.round(c + (255 - c) * 0.88);
+      return (
+        "#" +
+        [16, 8, 0]
+          .map((s) =>
+            mix((n >> s) & 0xff)
+              .toString(16)
+              .padStart(2, "0"),
+          )
+          .join("")
+      );
+    }
+
+    // ── PUBLIC API ────────────────────────────────────────────────────────────
+    triggerEvent(name, data = {}) {
+      window.dispatchEvent(
+        new CustomEvent(`aiChatWidget:${name}`, {
+          detail: { widget: this, ...data },
+        }),
+      );
     }
 
     open() {
-      this.openChat();
+      this._open();
     }
-
     close() {
-      this.closeChat();
+      this._close();
     }
-
-    sendCustomMessage(message) {
-      this.elements.input.value = message;
-      this.sendMessage();
+    destroy() {
+      this.root?.remove();
+      this.backdrop?.remove();
+      document.getElementById("ai-chat-widget-styles-v2")?.remove();
     }
   }
 
-  // Expose to window
+  // ── expose ──────────────────────────────────────────────────────────────────
   window.AIChatWidget = AIChatWidget;
 
-  // Auto-initialize if config is present
+  // auto-init
   if (window.aiChatWidgetConfig) {
     window.aiChatWidgetInstance = new AIChatWidget(window.aiChatWidgetConfig);
   }
