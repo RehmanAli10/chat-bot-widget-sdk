@@ -109,8 +109,20 @@
       this.init();
     }
 
+    _loadFontAwesome() {
+      const id = "ai-chat-widget-fa";
+      if (document.getElementById(id)) return; // already loaded
+      const link = document.createElement("link");
+      link.id = id;
+      link.rel = "stylesheet";
+      link.href =
+        "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css";
+      document.head.appendChild(link);
+    }
+
     // ── INIT ──────────────────────────────────────────────────────────────────
     init() {
+      this._loadFontAwesome();
       this.injectStyles();
       this.buildDOM();
       this.attachListeners();
