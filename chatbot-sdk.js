@@ -1,17 +1,15 @@
 /**
  * AI Chat Widget SDK
  * Embeddable chat widget for WordPress and other websites
- * Version: 2.0.0
+ * Version: 2.1.0
  *
- * WHAT'S NEW vs v1:
- *  - Dual-mode: "Chat With Us" (general) vs "Schedule an Appointment" (booking)
- *  - Conversational inline form: First Name → Last Name → Email → Practitioner
- *  - Practitioner autocomplete with badge UI
- *  - Slot card UI with "See all available slots" overlay
- *  - `mode` field sent with every API request
- *  - SID regenerated on every widget close/reset (prevents stale session context)
- *  - Booking-intent detection upgrades general→booking mode mid-conversation
- *  - Full state clear on appointment confirmed
+ * WHAT'S NEW vs v2.0:
+ *  - Updated booking flow: Location → First Name → Last Name → Email → Practitioner
+ *  - Location selection first in booking flow
+ *  - Patient verification during email step
+ *  - Optional practitioner with skip option for existing patients
+ *  - New patients skip practitioner and go straight to slots
+ *  - Improved state management
  */
 
 (function (window) {
@@ -68,6 +66,18 @@
     "✓ Easy online booking\n\n" +
     "Would you like to schedule an appointment, or do you have any questions?";
 
+  // Hardcoded locations fallback
+  const LOCATIONS = [
+    { id: 1, name: "Utrecht" },
+    { id: 2, name: "Arnhem" },
+    { id: 3, name: "Amsterdam" },
+    { id: 4, name: "The Hague" },
+    { id: 5, name: "Rotterdam" },
+    { id: 6, name: "Haarlem" },
+    { id: 7, name: "Kleiweg" },
+    { id: 8, name: "Amersfoort" },
+  ];
+
   // ════════════════════════════════════════════════════════════════════════════
   // MAIN CLASS
   // ════════════════════════════════════════════════════════════════════════════
@@ -83,6 +93,7 @@
         zIndex: config.zIndex || 1000,
         headerTitle: config.headerTitle || "One Chiropractic Studio",
         headerSubtitle: config.headerSubtitle || "The team can also help",
+        autoOpen: config.autoOpen || false,
         ...config,
       };
 
@@ -404,6 +415,16 @@
         }
         .aiw-continue-btn:hover { background:var(--aiw-pd); transform:translateY(-1px); }
 
+        /* skip button */
+        .aiw-skip-btn {
+          flex:1; padding:12px 20px; background:#f5f5f5; color:#666;
+          border:none; border-radius:8px; font-size:14px; font-weight:500;
+          cursor:pointer; font-family:inherit;
+          display:flex; align-items:center; justify-content:center; gap:8px;
+          transition:all .2s;
+        }
+        .aiw-skip-btn:hover { background:#e8e8e8; }
+
         /* practitioner autocomplete */
         .aiw-pract-wrap { position:relative; }
         .aiw-pract-wrap input { padding-right:36px; width: 100%; }
@@ -666,8 +687,11 @@
             "Excellent! We're excited to help you book your appointment. 😊",
           );
           setTimeout(() => {
-            this._addMsg("bot", "Great! Let's start with your first name.");
-            this._renderInlineForm();
+            this._addMsg(
+              "bot",
+              "First, please select your preferred location:",
+            );
+            this._renderLocationStep();
           }, 800);
         }, 1000);
       });
@@ -744,8 +768,11 @@
         setTimeout(() => {
           this.el.bar.style.display = "none";
           setTimeout(() => {
-            this._addMsg("bot", "Let's start with your first name.");
-            this._renderInlineForm();
+            this._addMsg(
+              "bot",
+              "First, please select your preferred location:",
+            );
+            this._renderLocationStep();
           }, 600);
         }, 500);
         return;
@@ -945,9 +972,11 @@
       this.el.msgs.appendChild(d);
       this._scrollBottom();
     }
+
     _removeTyping() {
       document.getElementById("aiwTyping")?.remove();
     }
+
     _rmOpts() {
       this.el.msgs.querySelector(".aiw-opts")?.remove();
       this.curOpts = null;
@@ -1010,6 +1039,9 @@
         }
         groups[key].slots.push(s);
       });
+
+      if (!dateKeys.length) return;
+
       const preview = groups[dateKeys[0]]?.slots.slice(0, 3) ?? [];
       const firstDd = groups[dateKeys[0]].dd;
 
@@ -1160,24 +1192,68 @@
           "bot",
           "Please choose a different location and I'll find available slots for you:",
         );
-        this._renderOpts("location", [
-          { id: 1, name: "Utrecht" },
-          { id: 2, name: "Arnhem" },
-          { id: 3, name: "Amsterdam" },
-          { id: 4, name: "The Hague" },
-          { id: 5, name: "Rotterdam" },
-          { id: 6, name: "Haarlem" },
-          { id: 7, name: "Kleiweg" },
-          { id: 8, name: "Amersfoort" },
-        ]);
+        this._renderOpts("location", LOCATIONS);
       }, 600);
     }
 
-    // ── INLINE CONVERSATIONAL FORM ────────────────────────────────────────────
-    _renderInlineForm() {
-      setTimeout(() => this._renderFirstNameField(), 800);
+    // ── LOCATION STEP ─────────────────────────────────────────────────────────
+    async _renderLocationStep() {
+      // Show typing while fetching locations
+      this._showTyping();
+
+      let locations = [];
+      try {
+        const r = await fetch(this.config.apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: this.SID,
+            message: "__GET_LOCATIONS__",
+            bookingState: this.bs,
+            mode: "booking",
+            extra: null,
+          }),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          locations = data.reply?.data ?? [];
+        }
+      } catch (error) {
+        console.error("Error fetching locations:", error);
+        // fall back to hardcoded list
+        locations = LOCATIONS;
+      }
+
+      this._removeTyping();
+
+      const wrap = document.createElement("div");
+      wrap.className = "aiw-opts";
+      wrap.id = "locationStep";
+
+      locations.forEach((loc) => {
+        const b = document.createElement("button");
+        b.className = "aiw-opt";
+        b.textContent = loc.name;
+        b.onclick = () => {
+          this.bs.locationId = loc.id;
+          this._addMsg("user", loc.name);
+          wrap.remove();
+          setTimeout(() => {
+            this._addMsg(
+              "bot",
+              "Great! Now let's get your details. What's your first name?",
+            );
+            this._renderFirstNameField();
+          }, 600);
+        };
+        wrap.appendChild(b);
+      });
+
+      this.el.msgs.appendChild(wrap);
+      this._scrollBottom();
     }
 
+    // ── INLINE CONVERSATIONAL FORM ────────────────────────────────────────────
     _makeCard(id) {
       const card = document.createElement("div");
       card.id = id;
@@ -1305,7 +1381,7 @@
       });
     }
 
-    // STEP 3 — Email
+    // STEP 3 — Email with patient verification
     _renderEmailField(firstName, lastName) {
       const card = this._makeCard("aiwEmail");
       card.innerHTML = `
@@ -1332,19 +1408,75 @@
           inp.focus();
           return;
         }
+
         err.style.display = "none";
         inp.disabled = true;
-        await this._animateFieldSuccess(card, inp, btn);
+        btn.classList.add("loading");
+
+        // Call backend to verify patient while showing loader
+        let patientResult = null;
+        try {
+          const r = await fetch(this.config.apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId: this.SID,
+              message: `verify_email:${val}`,
+              bookingState: this.bs,
+              mode: "booking",
+              extra: { firstName, lastName, email: val },
+            }),
+          });
+          if (r.ok) patientResult = (await r.json()).reply;
+        } catch (error) {
+          console.error("Verification error:", error);
+        }
+
+        btn.classList.remove("loading");
+        btn.classList.add("success");
+        inp.classList.add("success");
+        card.style.boxShadow = "0 2px 16px rgba(34,197,94,.18)";
+
+        await this._delay(420);
         this._addMsg("user", val);
         card.remove();
+
+        // Store patientId if verified
+        const isExisting = patientResult?.type === "patient_verified";
+        const isNew = patientResult?.type === "patient_not_found";
+
+        if (isExisting && patientResult.patientId) {
+          this.bs.patientId = patientResult.patientId;
+          if (patientResult.aiMessage)
+            this._addMsg("bot", patientResult.aiMessage);
+        }
+
+        // For new patients, store the patientId from the response
+        if (isNew && patientResult.patientId) {
+          this.bs.patientId = patientResult.patientId;
+        }
+
         setTimeout(() => {
-          this._addMsg(
-            "bot",
-            "Perfect! Do you have a preferred practitioner you'd like to see? (Optional - just hit Continue if you'd like to see all available appointments)",
-          );
-          this._renderPractitionerField(val, firstName, lastName);
+          if (isExisting) {
+            // Existing patient → show optional practitioner field
+            this._addMsg(
+              "bot",
+              `${firstName}! 👋 Do you have a preferred practitioner? (Optional — just click Continue to see all available slots)`,
+            );
+            this._renderPractitionerField(val, firstName, lastName);
+          } else {
+            // New patient → skip practitioner completely, go straight to slots with polite message
+            const msg = `I want to book an appointment. My name is ${firstName} ${lastName} and my email is ${val}`;
+            this._addMsg(
+              "bot",
+              `Thanks ${firstName}! 🙏 Please select from the available slots below for your initial assessment:`,
+            );
+            this.chatMode = "booking";
+            this._toBackend(msg);
+          }
         }, 600);
       };
+
       btn.addEventListener("click", submit);
       inp.addEventListener("keypress", (e) => {
         if (e.key === "Enter") submit();
@@ -1355,7 +1487,7 @@
       });
     }
 
-    // STEP 4 — Practitioner (optional)
+    // STEP 4 — Practitioner (optional, for existing patients)
     _renderPractitionerField(email, firstName, lastName) {
       let selectedP = null;
       let debounce = null;
@@ -1364,8 +1496,8 @@
       const wrap = document.createElement("div");
       wrap.className = "aiw-field-card";
       wrap.innerHTML = `
-        <label class="aiw-field-label" style="color:#aaa">
-          Practitioner <span style="font-weight:400;font-size:12px">(optional)</span>
+        <label class="aiw-field-label" style="color:#666">
+          Practitioner <span style="font-weight:400;font-size:12px;color:#888">(optional - skip to see all slots)</span>
         </label>
         <div class="aiw-pract-wrap">
           <input id="aiwPrInp" class="aiw-field-inp" type="text" placeholder="Search by name…" autocomplete="off" />
@@ -1383,9 +1515,15 @@
           </button>
         </div>
         <div class="aiw-field-err" id="aiwPrErr" style="display:none">Please select a practitioner from the list</div>
-        <button class="aiw-continue-btn" id="aiwPrSubmit">
-          Continue <i class="fas fa-arrow-right"></i>
-        </button>`;
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="aiw-skip-btn" id="aiwPrSkip">
+            Skip <i class="fas fa-arrow-right"></i>
+          </button>
+          <button class="aiw-continue-btn" id="aiwPrSubmit">
+            Continue <i class="fas fa-arrow-right"></i>
+          </button>
+        </div>`;
+
       this.el.msgs.appendChild(wrap);
       this._scrollBottom();
 
@@ -1398,6 +1536,7 @@
       const prBadgeX = wrap.querySelector("#aiwPrBadgeX");
       const prErr = wrap.querySelector("#aiwPrErr");
       const prSubmit = wrap.querySelector("#aiwPrSubmit");
+      const prSkip = wrap.querySelector("#aiwPrSkip");
 
       setTimeout(() => prInp.focus(), 100);
 
@@ -1439,6 +1578,7 @@
         prDrop.classList.remove("open");
         prInp.focus();
       });
+
       prBadgeX.addEventListener("click", () => {
         selectedP = null;
         prInp.value = "";
@@ -1466,35 +1606,38 @@
           e.preventDefault();
           if (highlight >= 0)
             items[highlight].dispatchEvent(new Event("mousedown"));
-          else finalSubmit();
+          else finalSubmit(false);
         } else if (e.key === "Escape") prDrop.classList.remove("open");
       });
+
       prInp.addEventListener("blur", () =>
         setTimeout(() => prDrop.classList.remove("open"), 150),
       );
 
-      const finalSubmit = () => {
-        if (prInp.value.trim() && !selectedP) {
+      const finalSubmit = (skip = false) => {
+        if (!skip && prInp.value.trim() && !selectedP) {
           prErr.style.display = "block";
           prInp.style.borderColor = "#e74c3c";
           prInp.focus();
           return;
         }
-        const practName = selectedP ? selectedP.name : null;
-        const msg = practName
-          ? `I want to book an appointment with ${practName}. My name is ${firstName} ${lastName} and my email is ${email}`
-          : `I want to book an appointment. My name is ${firstName} ${lastName} and my email is ${email}`;
+
+        if (selectedP) {
+          this._addMsg("user", `Practitioner: ${selectedP.name}`);
+          this.bs.practitionerId = selectedP.id;
+          this._sendSel(`practitioner_${selectedP.id}`);
+        } else {
+          this._addMsg("user", "No practitioner preference");
+          const msg = `I want to book an appointment. My name is ${firstName} ${lastName} and my email is ${email}`;
+          this.chatMode = "booking";
+          this._toBackend(msg);
+        }
+
         wrap.remove();
-        this._addMsg(
-          "user",
-          practName
-            ? `Practitioner: ${practName}`
-            : "Show all available appointments",
-        );
-        this.chatMode = "booking";
-        this._toBackend(msg);
       };
-      prSubmit.addEventListener("click", finalSubmit);
+
+      prSubmit.addEventListener("click", () => finalSubmit(false));
+      prSkip.addEventListener("click", () => finalSubmit(true));
     }
 
     // practitioner autocomplete helpers
@@ -1616,9 +1759,11 @@
     open() {
       this._open();
     }
+
     close() {
       this._close();
     }
+
     destroy() {
       this.root?.remove();
       this.backdrop?.remove();
