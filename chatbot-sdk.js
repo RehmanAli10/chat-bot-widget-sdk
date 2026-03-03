@@ -907,18 +907,51 @@
           if (reply.data?.length)
             this._renderOpts("appointmentType", reply.data);
           break;
-        // case "available_slots":
-        //   if (reply.data?.length) this._renderSlots(reply.data);
-        //   else if (reply.unavailableDates?.length)
-        //     this._renderNoSlots(reply.unavailableDates);
-        //   break;
         case "available_slots":
           if (reply.data?.length) this._renderSlots(reply.data);
-          else
-            setTimeout(
-              () => this._renderNoSlotsChoice(!!this.bs.practitionerId),
-              400,
-            );
+          else {
+            setTimeout(() => {
+              const hasPract = !!this.bs.practitionerId;
+              if (hasPract) {
+                this._addMsg(
+                  "bot",
+                  "No slots are available with this practitioner at the selected location. Would you like to skip the practitioner preference and see all available slots instead?",
+                );
+                const wrap = document.createElement("div");
+                wrap.className = "aiw-opts";
+                const btnSkip = document.createElement("button");
+                btnSkip.className = "aiw-opt";
+                btnSkip.textContent = "See all available slots";
+                btnSkip.onclick = () => {
+                  this.bs.practitionerId = null;
+                  this._addMsg("user", "See all available slots");
+                  this._sendSel(this.bs.locationId.toString());
+                  wrap.remove();
+                };
+                const btnLocation = document.createElement("button");
+                btnLocation.className = "aiw-opt";
+                btnLocation.textContent = "Try a different location";
+                btnLocation.onclick = () => {
+                  this.bs.practitionerId = null;
+                  this.bs.locationId = null;
+                  this._addMsg("user", "Try a different location");
+                  this._addMsg("bot", "Please select a different location:");
+                  this._renderLocationStep();
+                  wrap.remove();
+                };
+                wrap.appendChild(btnSkip);
+                wrap.appendChild(btnLocation);
+                this.el.msgs.appendChild(wrap);
+                this._scrollBottom();
+              } else {
+                this._addMsg(
+                  "bot",
+                  "No slots are available at this location. Please try a different one:",
+                );
+                this._renderLocationStep();
+              }
+            }, 400);
+          }
           break;
         case "appointment_confirmed":
           this.bs = {
