@@ -907,10 +907,18 @@
           if (reply.data?.length)
             this._renderOpts("appointmentType", reply.data);
           break;
+        // case "available_slots":
+        //   if (reply.data?.length) this._renderSlots(reply.data);
+        //   else if (reply.unavailableDates?.length)
+        //     this._renderNoSlots(reply.unavailableDates);
+        //   break;
         case "available_slots":
           if (reply.data?.length) this._renderSlots(reply.data);
-          else if (reply.unavailableDates?.length)
-            this._renderNoSlots(reply.unavailableDates);
+          else
+            setTimeout(
+              () => this._renderNoSlotsChoice(!!this.bs.practitionerId),
+              400,
+            );
           break;
         case "appointment_confirmed":
           this.bs = {
@@ -1241,9 +1249,9 @@
           setTimeout(() => {
             this._addMsg(
               "bot",
-              "Great! Now let's get your details. What's your first name?",
+              "Great! Now let's get your details. What's your full name?",
             );
-            this._renderFirstNameField();
+            this._renderFullNameField();
           }, 600);
         };
         wrap.appendChild(b);
@@ -1284,16 +1292,16 @@
       return new Promise((r) => setTimeout(r, ms));
     }
 
-    // STEP 1 — First Name
-    _renderFirstNameField() {
-      const card = this._makeCard("aiwFirstName");
+    // STEP 1 — Full Name
+    _renderFullNameField() {
+      const card = this._makeCard("aiwFullName");
       card.innerHTML = `
-        <label class="aiw-field-label">First Name</label>
-        <div class="aiw-field-row">
-          <input id="aiwFnInp" class="aiw-field-inp" type="text" placeholder="John" />
-          ${this._makeSBtn()}
-        </div>
-        <div class="aiw-field-err" id="aiwFnErr"></div>`;
+    <label class="aiw-field-label">Full Name</label>
+    <div class="aiw-field-row">
+      <input id="aiwFnInp" class="aiw-field-inp" type="text" placeholder="John Doe" />
+      ${this._makeSBtn()}
+    </div>
+    <div class="aiw-field-err" id="aiwFnErr"></div>`;
       this.el.msgs.appendChild(card);
       this._scrollBottom();
 
@@ -1304,73 +1312,35 @@
 
       const submit = async () => {
         const val = inp.value.trim();
-        if (!val || val.length < 2) {
-          err.textContent = "Please enter your first name";
+        const parts = val.split(/\s+/).filter(Boolean);
+
+        if (!val || parts.length < 2) {
+          err.textContent =
+            "Please provide your full name (first and last name)";
           err.style.display = "block";
           inp.style.borderColor = "#e74c3c";
           inp.focus();
           return;
         }
+
         err.style.display = "none";
         inp.disabled = true;
         await this._animateFieldSuccess(card, inp, btn);
         this._addMsg("user", val);
         card.remove();
-        setTimeout(() => {
-          this._addMsg("bot", "Great! What's your last name?");
-          this._renderLastNameField(val);
-        }, 600);
-      };
-      btn.addEventListener("click", submit);
-      inp.addEventListener("keypress", (e) => {
-        if (e.key === "Enter") submit();
-      });
-      inp.addEventListener("input", () => {
-        err.style.display = "none";
-        inp.style.borderColor = "";
-      });
-    }
 
-    // STEP 2 — Last Name
-    _renderLastNameField(firstName) {
-      const card = this._makeCard("aiwLastName");
-      card.innerHTML = `
-        <label class="aiw-field-label">Last Name</label>
-        <div class="aiw-field-row">
-          <input id="aiwLnInp" class="aiw-field-inp" type="text" placeholder="Doe" />
-          ${this._makeSBtn()}
-        </div>
-        <div class="aiw-field-err" id="aiwLnErr"></div>`;
-      this.el.msgs.appendChild(card);
-      this._scrollBottom();
+        const firstName = parts[0];
+        const lastName = parts.slice(1).join(" ");
 
-      const inp = card.querySelector("#aiwLnInp");
-      const btn = card.querySelector(".aiw-sbtn");
-      const err = card.querySelector("#aiwLnErr");
-      setTimeout(() => inp.focus(), 100);
-
-      const submit = async () => {
-        const val = inp.value.trim();
-        if (!val || val.length < 2) {
-          err.textContent = "Please enter your last name";
-          err.style.display = "block";
-          inp.style.borderColor = "#e74c3c";
-          inp.focus();
-          return;
-        }
-        err.style.display = "none";
-        inp.disabled = true;
-        await this._animateFieldSuccess(card, inp, btn);
-        this._addMsg("user", val);
-        card.remove();
         setTimeout(() => {
           this._addMsg(
             "bot",
-            `Thanks ${firstName} ${val}! What's your email address?`,
+            `Thanks ${firstName}! What's your email address?`,
           );
-          this._renderEmailField(firstName, val);
+          this._renderEmailField(firstName, lastName);
         }, 600);
       };
+
       btn.addEventListener("click", submit);
       inp.addEventListener("keypress", (e) => {
         if (e.key === "Enter") submit();
@@ -1381,7 +1351,7 @@
       });
     }
 
-    // STEP 3 — Email with patient verification
+    // STEP 2 — Email with patient verification
     _renderEmailField(firstName, lastName) {
       const card = this._makeCard("aiwEmail");
       card.innerHTML = `
@@ -1442,8 +1412,12 @@
         card.remove();
 
         // Store patientId if verified
-        const isExisting = patientResult?.type === "patient_verified";
-        const isNew = patientResult?.type === "patient_not_found";
+        const isExisting =
+          patientResult?.type === "patient_verified" &&
+          !patientResult?.isNewPatient;
+        const isNew =
+          patientResult?.type === "patient_not_found" ||
+          patientResult?.isNewPatient === true;
 
         if (isExisting && patientResult.patientId) {
           this.bs.patientId = patientResult.patientId;
@@ -1466,13 +1440,8 @@
             this._renderPractitionerField(val, firstName, lastName);
           } else {
             // New patient → skip practitioner completely, go straight to slots with polite message
-            const msg = `I want to book an appointment. My name is ${firstName} ${lastName} and my email is ${val}`;
-            this._addMsg(
-              "bot",
-              `Thanks ${firstName}! 🙏 Please select from the available slots below for your initial assessment:`,
-            );
             this.chatMode = "booking";
-            this._toBackend(msg);
+            this._sendSel(this.bs.locationId.toString());
           }
         }, 600);
       };
@@ -1628,9 +1597,8 @@
           this._sendSel(`practitioner_${selectedP.id}`);
         } else {
           this._addMsg("user", "No practitioner preference");
-          const msg = `I want to book an appointment. My name is ${firstName} ${lastName} and my email is ${email}`;
           this.chatMode = "booking";
-          this._toBackend(msg);
+          this._sendSel(this.bs.locationId.toString());
         }
 
         wrap.remove();
