@@ -558,12 +558,51 @@
         .aiw-backdrop.active { display:block; }
 
         /* responsive */
-        @media(max-width:480px){
-          .aiw-panel {
-            width:calc(100vw - 32px); height:calc(100vh - 120px);
-            ${this.config.position.includes("right") ? "right:0;" : "left:0;"}
-          }
-        }
+    @media(max-width:480px){
+  .aiw-root {
+    bottom:16px !important;
+    right:16px !important;
+    left:auto !important;
+  }
+  .aiw-panel {
+    width:calc(100vw - 32px);
+    height:calc(100dvh - 100px);
+    max-height:calc(100dvh - 100px);
+    right:0; left:auto;
+    bottom:calc(56px + 12px);
+    border-radius:12px;
+  }
+  .aiw-launcher {
+    width:50px; height:50px; font-size:20px;
+  }
+  .aiw-opts {
+    gap:8px;
+  }
+  .aiw-opt {
+    padding:10px 16px;
+    font-size:13px;
+  }
+  .aiw-field-card {
+    padding:12px;
+  }
+  .aiw-field-inp {
+    font-size:16px !important;
+  }
+  .aiw-inp {
+    font-size:16px !important;
+  }
+  .aiw-bubble {
+    font-size:13px;
+  }
+  .aiw-slot-btn {
+    padding:12px 14px;
+    font-size:13px;
+  }
+  .aiw-continue-btn, .aiw-skip-btn {
+    padding:11px 14px;
+    font-size:13px;
+  }
+}
       `;
       document.head.appendChild(style);
     }
