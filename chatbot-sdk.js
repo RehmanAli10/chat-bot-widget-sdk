@@ -78,6 +78,17 @@
     { id: 8, name: "Amersfoort" },
   ];
 
+  const LOCATION_BOOKING_URLS = {
+    1: "https://onechiropracticstudioamersfoort.neptune.practicehub.io/p/booking",
+    2: "https://arnhemonechiropracticstudio.neptune.practicehub.io/p/booking",
+    3: "https://ailcol.neptune.practicehub.io/p/booking/?lid=1&",
+    4: "https://onechirodenhaag.neptune.practicehub.io/p/booking",
+    5: "https://onechirodenhaag.neptune.practicehub.io/p/book-online?lid=2",
+    6: "https://haarlem.neptune.practicehub.io/p/book-online",
+    7: null,
+    8: "https://onechiropracticstudioamersfoort.neptune.practicehub.io/p/booking",
+  };
+
   // ════════════════════════════════════════════════════════════════════════════
   // MAIN CLASS
   // ════════════════════════════════════════════════════════════════════════════
@@ -908,49 +919,10 @@
             this._renderOpts("appointmentType", reply.data);
           break;
         case "available_slots":
-          if (reply.data?.length) this._renderSlots(reply.data);
-          else {
-            setTimeout(() => {
-              const hasPract = !!this.bs.practitionerId;
-              if (hasPract) {
-                this._addMsg(
-                  "bot",
-                  "No slots are available with this practitioner at the selected location. Would you like to skip the practitioner preference and see all available slots instead?",
-                );
-                const wrap = document.createElement("div");
-                wrap.className = "aiw-opts";
-                const btnSkip = document.createElement("button");
-                btnSkip.className = "aiw-opt";
-                btnSkip.textContent = "See all available slots";
-                btnSkip.onclick = () => {
-                  this.bs.practitionerId = null;
-                  this._addMsg("user", "See all available slots");
-                  this._sendSel(this.bs.locationId.toString());
-                  wrap.remove();
-                };
-                const btnLocation = document.createElement("button");
-                btnLocation.className = "aiw-opt";
-                btnLocation.textContent = "Try a different location";
-                btnLocation.onclick = () => {
-                  this.bs.practitionerId = null;
-                  this.bs.locationId = null;
-                  this._addMsg("user", "Try a different location");
-                  this._addMsg("bot", "Please select a different location:");
-                  this._renderLocationStep();
-                  wrap.remove();
-                };
-                wrap.appendChild(btnSkip);
-                wrap.appendChild(btnLocation);
-                this.el.msgs.appendChild(wrap);
-                this._scrollBottom();
-              } else {
-                this._addMsg(
-                  "bot",
-                  "No slots are available at this location. Please try a different one:",
-                );
-                this._renderLocationStep();
-              }
-            }, 400);
+          if (reply.data?.length) {
+            this._renderSlots(reply.data);
+          } else {
+            setTimeout(() => this._renderNoSlotsChoice(), 400);
           }
           break;
         case "appointment_confirmed":
@@ -1235,6 +1207,43 @@
         );
         this._renderOpts("location", LOCATIONS);
       }, 600);
+    }
+
+    _renderNoSlotsChoice() {
+      const bookingUrl = LOCATION_BOOKING_URLS[this.bs.locationId] ?? null;
+
+      const card = document.createElement("div");
+      card.style.cssText =
+        "background:white;border:1.5px solid #e8e8e8;border-radius:14px;margin-top:8px;padding:16px;box-shadow:0 2px 12px rgba(0,0,0,0.07);animation:aiw-fadeUp 0.25s ease both";
+
+      card.innerHTML = `
+    <div style="font-size:13px;color:#555;margin-bottom:${bookingUrl ? "14px" : "0"};line-height:1.6">
+      <i class="fas fa-calendar-times" style="color:#f59e0b;margin-right:6px"></i>
+      <strong>No available slots found</strong> for your selection.
+      ${
+        bookingUrl
+          ? `<br><br>Please use the link below to book your appointment directly on our website.`
+          : `<br><br>Unfortunately no slots are available at this location right now. Please contact the clinic directly for assistance.`
+      }
+    </div>
+    ${
+      bookingUrl
+        ? `
+    <a href="${bookingUrl}" target="_blank" rel="noopener noreferrer"
+      style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+             padding:12px 16px;background:#0078d4;color:white;border:none;border-radius:8px;
+             font-size:14px;font-weight:500;cursor:pointer;font-family:inherit;
+             text-decoration:none;margin-top:4px;transition:background 0.2s;box-sizing:border-box"
+      onmouseover="this.style.background='#005a9e'"
+      onmouseout="this.style.background='#0078d4'">
+      <i class="fas fa-external-link-alt"></i> Book Online at This Location
+    </a>
+    `
+        : ""
+    }`;
+
+      this.el.msgs.appendChild(card);
+      this._scrollBottom();
     }
 
     // ── LOCATION STEP ─────────────────────────────────────────────────────────
