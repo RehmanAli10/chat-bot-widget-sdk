@@ -1367,9 +1367,24 @@
 
         err.style.display = "none";
         inp.disabled = true;
+        // await this._animateFieldSuccess(card, inp, btn);
+        // this._addMsg("user", val);
+        // card.remove();
+
+        // const firstName = parts[0];
+        // const lastName = parts.slice(1).join(" ");
+
         await this._animateFieldSuccess(card, inp, btn);
-        this._addMsg("user", val);
-        card.remove();
+
+        // Collapse to confirmed state
+        btn.style.display = "none";
+        const inputRow = inp.parentElement;
+        inputRow.style.position = "relative";
+        const tick = document.createElement("span");
+        tick.style.cssText =
+          "position:absolute;right:12px;top:50%;transform:translateY(-50%);color:#22c55e;font-size:15px;pointer-events:none";
+        tick.innerHTML = '<i class="fas fa-check"></i>';
+        inputRow.appendChild(tick);
 
         const firstName = parts[0];
         const lastName = parts.slice(1).join(" ");
@@ -1444,14 +1459,31 @@
           console.error("Verification error:", error);
         }
 
+        // btn.classList.remove("loading");
+        // btn.classList.add("success");
+        // inp.classList.add("success");
+        // card.style.boxShadow = "0 2px 16px rgba(34,197,94,.18)";
+
+        // await this._delay(420);
+        // this._addMsg("user", val);
+        // card.remove();
+
         btn.classList.remove("loading");
         btn.classList.add("success");
         inp.classList.add("success");
         card.style.boxShadow = "0 2px 16px rgba(34,197,94,.18)";
 
         await this._delay(420);
-        this._addMsg("user", val);
-        card.remove();
+
+        // Collapse to confirmed state
+        btn.style.display = "none";
+        const inputRow = inp.parentElement;
+        inputRow.style.position = "relative";
+        const tick = document.createElement("span");
+        tick.style.cssText =
+          "position:absolute;right:12px;top:50%;transform:translateY(-50%);color:#22c55e;font-size:15px;pointer-events:none";
+        tick.innerHTML = '<i class="fas fa-check"></i>';
+        inputRow.appendChild(tick);
 
         // Store patientId if verified
         const isExisting =
