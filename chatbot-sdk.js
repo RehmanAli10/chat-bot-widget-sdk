@@ -201,7 +201,7 @@
           position: absolute;
           ${this.config.position.includes("right") ? "right:0;" : "left:0;"}
           bottom: calc(56px + 16px);
-          width: 390px; height: 580px;
+          width: 390px; height: 500px;
           background: white;
           border-radius: 16px;
           box-shadow: 0 8px 32px rgba(0,0,0,.14);
