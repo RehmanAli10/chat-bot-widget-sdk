@@ -690,15 +690,15 @@
     // ── EVENT LISTENERS ───────────────────────────────────────────────────────
     attachListeners() {
       this.el.launcher.addEventListener("click", () => this._toggle());
-      this.backdrop.addEventListener("click", () => this._close());
+      // this.backdrop.addEventListener("click", () => this._close());
       this.el.close.addEventListener("click", () => this._close());
       this.el.back.addEventListener("click", () => {
         this._reset();
         this._go("welcome");
       });
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && this.isOpen) this._close();
-      });
+      // document.addEventListener("keydown", (e) => {
+      //   if (e.key === "Escape" && this.isOpen) this._close();
+      // });
 
       this.el.send.addEventListener("click", () => this._sendInput());
       this.el.inp.addEventListener("keypress", (e) => {
