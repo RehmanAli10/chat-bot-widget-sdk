@@ -1000,15 +1000,91 @@
         hour: "2-digit",
         minute: "2-digit",
       });
+
+      // Detect if bot message mentions the schedule button
+      const schedulePatterns = [
+        /click the ["']?Schedule an Appointment["']? button/i,
+        /["']?Schedule an Appointment["']? button/i,
+        /click.*schedule.*appointment/i,
+      ];
+      const hasScheduleBtn =
+        who === "bot" && schedulePatterns.some((re) => re.test(text));
+
+      // Clean the button reference from the text
+      let cleanText = text;
+      if (hasScheduleBtn) {
+        cleanText = text
+          .replace(
+            /[,.]?\s*[Jj]ust click the ["']?Schedule an Appointment["']? button[^.!]*[.!]?/gi,
+            "",
+          )
+          .replace(
+            /[,.]?\s*[Pp]lease click the ["']?Schedule an Appointment["']? button[^.!]*[.!]?/gi,
+            "",
+          )
+          .replace(
+            /[,.]?\s*click the ["']?Schedule an Appointment["']? button[^.!]*[.!]?/gi,
+            "",
+          )
+          .trim();
+      }
+
+      const scheduleButtonHTML = hasScheduleBtn
+        ? `<div style="margin-top:10px">
+        <button
+          style="padding:9px 18px;background:var(--aiw-p);color:white;border:none;
+                 border-radius:999px;font-size:13px;font-weight:500;cursor:pointer;
+                 font-family:inherit;display:inline-flex;align-items:center;gap:7px;
+                 transition:all 0.2s;box-shadow:0 2px 8px rgba(0,120,212,0.3)"
+          onmouseover="this.style.opacity='0.85';this.style.transform='translateY(-1px)'"
+          onmouseout="this.style.opacity='1';this.style.transform='translateY(0)'"
+          id="aiwInlineSched_${Date.now()}">
+          <i class="fas fa-calendar-plus"></i> Schedule an Appointment
+        </button>
+      </div>`
+        : "";
+
       d.innerHTML = `
-        <div class="aiw-av"><i class="${who === "bot" ? "fas fa-robot" : "fas fa-user"}"></i></div>
-        <div class="aiw-mbody">
-          <div class="aiw-bubble">${this._esc(text)}</div>
-          <div class="aiw-mtime">${t}</div>
-        </div>`;
+    <div class="aiw-av"><i class="${who === "bot" ? "fas fa-robot" : "fas fa-user"}"></i></div>
+    <div class="aiw-mbody">
+      <div class="aiw-bubble">${this._esc(cleanText)}${scheduleButtonHTML}</div>
+      <div class="aiw-mtime">${t}</div>
+    </div>`;
+
       this.el.msgs.appendChild(d);
+
+      // Attach click handler to the inline schedule button if rendered
+      if (hasScheduleBtn) {
+        const inlineBtn = d.querySelector("[id^='aiwInlineSched_']");
+        if (inlineBtn) {
+          inlineBtn.addEventListener("click", () =>
+            this._triggerScheduleFlow(),
+          );
+        }
+      }
+
       this._scrollBottom();
       if (who === "bot") this._playSound();
+    }
+
+    _triggerScheduleFlow() {
+      this.chatMode = "booking";
+      this._addMsg("user", "Schedule an Appointment");
+      this._setBusy(true);
+      this._showTyping();
+      this.el.bar.style.display = "none";
+      setTimeout(() => {
+        this._removeTyping();
+        this._setBusy(false);
+        this._addMsg(
+          "bot",
+          "Excellent! We're excited to help you book your appointment. 😊",
+        );
+        setTimeout(() => {
+          this._addMsg("bot", "First, please select your preferred location:");
+          this._renderLocationStep();
+        }, 800);
+      }, 1000);
     }
 
     _showTyping() {
