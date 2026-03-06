@@ -1368,8 +1368,17 @@
         : ""
     }`;
 
+      // this.el.msgs.appendChild(card);
+      // this._scrollBottom();
       this.el.msgs.appendChild(card);
       this._scrollBottom();
+
+      // If user came through "Chat With Us", restore the chat bar so they can ask questions
+      if (this.entryMode === "general") {
+        this.chatMode = "general";
+        this.el.bar.style.display = "flex";
+        this.el.inp.focus();
+      }
     }
 
     // ── LOCATION STEP ─────────────────────────────────────────────────────────
