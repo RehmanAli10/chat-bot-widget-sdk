@@ -111,6 +111,8 @@
       // session / state
       this.SID = generateUUID();
       this.chatMode = "general"; // "general" | "booking"
+      this.entryMode = "general";
+
       this.bs = {
         patientId: null,
         practitionerId: null,
@@ -708,6 +710,7 @@
       // welcome buttons
       this.el.btnChat.addEventListener("click", () => {
         this.chatMode = "general";
+        this.entryMode = "general";
         this._go("chat");
         this.el.bar.style.display = "flex";
         this._addMsg("bot", "Hello 👋 How can we help you today?");
@@ -723,6 +726,7 @@
 
       this.el.btnSched.addEventListener("click", () => {
         this.chatMode = "booking";
+        this.entryMode = "booking";
         this._go("chat");
         this._addMsg("bot", "Hello 👋 How can we help you today?");
         this._addMsg("user", "Schedule an Appointment");
@@ -785,6 +789,7 @@
     _reset() {
       this.SID = generateUUID(); // fresh session = fresh backend context
       this.chatMode = "general";
+      this.entryMode = "general";
       this.bs = {
         patientId: null,
         practitionerId: null,
@@ -972,6 +977,12 @@
             appointmentTypeId: null,
             selectedSlot: null,
           };
+
+          if (this.entryMode === "general") {
+            this.chatMode = "general";
+            this.el.bar.style.display = "flex";
+            this.el.inp.focus();
+          }
           break;
         case "error":
           if (!reply.aiMessage)
