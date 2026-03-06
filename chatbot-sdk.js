@@ -32,25 +32,25 @@
   }
 
   // ── booking-intent keywords (used to auto-upgrade general→booking) ──────────
-  const BOOKING_INTENT_PATTERNS = [
-    /\bbook\b/i,
-    /\bschedul/i,
-    /\bappointment\b/i,
-    /\breserv/i,
-    /\bvisit\b/i,
-    /\bsee a doctor\b/i,
-    /\bcome in\b/i,
-    /\bsign me up\b/i,
-    /\bset up\b/i,
-    /\bi want to (book|schedule|make|get)\b/i,
-    /\bi'd like to (book|schedule|make|get)\b/i,
-    /\bcan i (book|schedule|make|get)\b/i,
-    /\bi need (an appointment|a slot|to book|to schedule)\b/i,
-  ];
+  // const BOOKING_INTENT_PATTERNS = [
+  //   /\bbook\b/i,
+  //   /\bschedul/i,
+  //   /\bappointment\b/i,
+  //   /\breserv/i,
+  //   /\bvisit\b/i,
+  //   /\bsee a doctor\b/i,
+  //   /\bcome in\b/i,
+  //   /\bsign me up\b/i,
+  //   /\bset up\b/i,
+  //   /\bi want to (book|schedule|make|get)\b/i,
+  //   /\bi'd like to (book|schedule|make|get)\b/i,
+  //   /\bcan i (book|schedule|make|get)\b/i,
+  //   /\bi need (an appointment|a slot|to book|to schedule)\b/i,
+  // ];
 
-  function detectsBookingIntent(text) {
-    return BOOKING_INTENT_PATTERNS.some((re) => re.test(text));
-  }
+  // function detectsBookingIntent(text) {
+  //   return BOOKING_INTENT_PATTERNS.some((re) => re.test(text));
+  // }
 
   // ── welcome message shown in general mode ───────────────────────────────────
   const WELCOME_MSG =
@@ -813,25 +813,25 @@
       this.el.inp.value = "";
 
       // general→booking intent upgrade
-      if (this.chatMode === "general" && detectsBookingIntent(m)) {
-        this.chatMode = "booking";
-        this._addMsg("user", m);
-        this._addMsg(
-          "bot",
-          "Of course! Let me get your appointment set up. 😊",
-        );
-        setTimeout(() => {
-          this.el.bar.style.display = "none";
-          setTimeout(() => {
-            this._addMsg(
-              "bot",
-              "First, please select your preferred location:",
-            );
-            this._renderLocationStep();
-          }, 600);
-        }, 500);
-        return;
-      }
+      // if (this.chatMode === "general" && detectsBookingIntent(m)) {
+      //   this.chatMode = "booking";
+      //   this._addMsg("user", m);
+      //   this._addMsg(
+      //     "bot",
+      //     "Of course! Let me get your appointment set up. 😊",
+      //   );
+      //   setTimeout(() => {
+      //     this.el.bar.style.display = "none";
+      //     setTimeout(() => {
+      //       this._addMsg(
+      //         "bot",
+      //         "First, please select your preferred location:",
+      //       );
+      //       this._renderLocationStep();
+      //     }, 600);
+      //   }, 500);
+      //   return;
+      // }
 
       this._addMsg("user", m);
       this._toBackend(m);
