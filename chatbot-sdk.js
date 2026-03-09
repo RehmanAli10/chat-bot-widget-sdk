@@ -53,18 +53,21 @@
   // }
 
   // ── welcome message shown in general mode ───────────────────────────────────
+  // const WELCOME_MSG =
+  //   "Welcome to One Chiropractic Studio! 🏥\n\n" +
+  //   "We're a network of chiropractic clinics across the Netherlands with locations in Utrecht, Amsterdam, Rotterdam, The Hague, Haarlem, Arnhem, Gouda, and Amersfoort.\n\n" +
+  //   "Our Services:\n" +
+  //   "• ONE Adjustment - Regular chiropractic adjustments\n" +
+  //   "• Initial Assessment - Comprehensive first visit evaluation\n\n" +
+  //   "Why Choose Us:\n" +
+  //   "✓ Experienced practitioners\n" +
+  //   "✓ Modern facilities\n" +
+  //   "✓ Convenient locations\n" +
+  //   "✓ Easy online booking\n\n" +
+  //   "Would you like to schedule an appointment, or do you have any questions?";
+
   const WELCOME_MSG =
-    "Welcome to One Chiropractic Studio! 🏥\n\n" +
-    "We're a network of chiropractic clinics across the Netherlands with locations in Utrecht, Amsterdam, Rotterdam, The Hague, Haarlem, Arnhem, Gouda, and Amersfoort.\n\n" +
-    "Our Services:\n" +
-    "• ONE Adjustment - Regular chiropractic adjustments\n" +
-    "• Initial Assessment - Comprehensive first visit evaluation\n\n" +
-    "Why Choose Us:\n" +
-    "✓ Experienced practitioners\n" +
-    "✓ Modern facilities\n" +
-    "✓ Convenient locations\n" +
-    "✓ Easy online booking\n\n" +
-    "Would you like to schedule an appointment, or do you have any questions?";
+    "Hi, I'd like to learn more about One Chiropractic Studio and the services you offer.";
 
   // Hardcoded locations fallback
   const LOCATIONS = [
@@ -717,11 +720,11 @@
         this._addMsg("user", "Chat With Us");
         this._setBusy(true);
         this._showTyping();
-        setTimeout(() => {
-          this._removeTyping();
-          this._setBusy(false);
-          this._addMsg("bot", WELCOME_MSG);
-        }, 1000);
+        // setTimeout(() => {
+        this._removeTyping();
+        this._setBusy(false);
+        this._sendSel(WELCOME_MSG);
+        // }, 1000);
       });
 
       this.el.btnSched.addEventListener("click", () => {
@@ -811,27 +814,6 @@
       const m = this.el.inp.value.trim();
       if (!m || this.busy) return;
       this.el.inp.value = "";
-
-      // general→booking intent upgrade
-      // if (this.chatMode === "general" && detectsBookingIntent(m)) {
-      //   this.chatMode = "booking";
-      //   this._addMsg("user", m);
-      //   this._addMsg(
-      //     "bot",
-      //     "Of course! Let me get your appointment set up. 😊",
-      //   );
-      //   setTimeout(() => {
-      //     this.el.bar.style.display = "none";
-      //     setTimeout(() => {
-      //       this._addMsg(
-      //         "bot",
-      //         "First, please select your preferred location:",
-      //       );
-      //       this._renderLocationStep();
-      //     }, 600);
-      //   }, 500);
-      //   return;
-      // }
 
       this._addMsg("user", m);
       this._toBackend(m);
